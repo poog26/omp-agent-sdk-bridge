@@ -19,7 +19,7 @@ import { extractAllToolResults as _extractAllToolResults, type McpResult } from 
 import { QueryContext, ctx } from "./query-state.js";
 import { loadConfig, type Config, type ForwardSettings } from "./config.js";
 import { composeAppend, extractOmpPromptParts, isAgentPrompt } from "./omp-prompt.js";
-import { ccChildEnv } from "./child-env.js";
+import { authRouteNotice, ccChildEnv } from "./child-env.js";
 import { planThinking, type ThinkingPlan } from "./effort.js";
 import { askClaudeToolPolicy, type AskClaudeMode } from "./askclaude-tools.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
@@ -1722,8 +1722,8 @@ function forwardSettings(forward: ForwardSettings | undefined): ForwardSettings 
 
 // --- Extension registration ---
 
-const DEFAULT_TOOL_DESCRIPTION_FULL = "Delegate to Claude Code for a second opinion or analysis (code review, architecture questions, debugging theories), or to autonomously handle a task. Defaults to read-only mode — use full mode when the user wants to delegate a task that requires changes. Prefer to handle straightforward tasks yourself.";
-const DEFAULT_TOOL_DESCRIPTION = "Delegate to Claude Code for a second opinion or analysis (code review, architecture questions, debugging theories). Read-only — Claude Code can explore the codebase but not make changes. Prefer to handle straightforward tasks yourself.";
+const DEFAULT_TOOL_DESCRIPTION_FULL = "Delegate to Claude (running in Claude Code) for a second opinion or analysis (code review, architecture questions, debugging theories), or to autonomously handle a task. Defaults to read-only mode — use full mode when the user wants to delegate a task that requires changes. Prefer to handle straightforward tasks yourself.";
+const DEFAULT_TOOL_DESCRIPTION = "Delegate to Claude (running in Claude Code) for a second opinion or analysis (code review, architecture questions, debugging theories). Read-only — Claude can explore the codebase but not make changes. Prefer to handle straightforward tasks yourself.";
 
 const PREVIEW_MAX_CHARS = 1000;
 const PREVIEW_MAX_LINES = 6;
@@ -1758,9 +1758,18 @@ export default function (pi: ExtensionAPI) {
 			g[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
 		}
 	};
+	let authNoticeShown = false;
 	pi.on("session_start", (_event, ctx) => {
 		piUI = ctx.ui;
 		clearSessions("session_start");
+		// Default billing leaves Claude Code's auth untouched; say so when the environment
+		// would route it somewhere other than the user's Claude login.
+		const billing = providerSettings.billing ?? "inherit";
+		const notice = billing === "inherit" ? authRouteNotice() : undefined;
+		if (notice && !authNoticeShown) {
+			authNoticeShown = true;
+			ctx.ui?.notify?.(notice, "warning");
+		}
 	});
 	pi.on("session_switch", (event) => clearSessions(`session_switch:${event.reason}`));
 	pi.on("session_branch", () => clearSessions("session_branch"));
@@ -1855,7 +1864,7 @@ export default function (pi: ExtensionAPI) {
 
 	if (askConf?.enabled !== false) {
 		const askClaudeParams = Type.Object({
-			prompt: Type.String({ description: "The question or task for Claude Code. By default Claude sees the full conversation history. Don't research up front, let Claude explore." }),
+			prompt: Type.String({ description: "The question or task for Claude. By default Claude sees the full conversation history. Don't research up front, let Claude explore." }),
 			mode: Type.Optional(StringEnum(modeValues, { description: modeDesc })),
 			model: Type.Optional(Type.String({ description: `Claude model ("opus", "sonnet", "haiku", "fable" pick the newest of that family, or a full id). Defaults to "${defaultModel}".` })),
 			thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, { description: "Thinking effort level. Omit to use Claude Code's default." })),
@@ -1863,7 +1872,7 @@ export default function (pi: ExtensionAPI) {
 		});
 		pi.registerTool<typeof askClaudeParams>({
 			name: askConf?.name ?? "AskClaude",
-			label: askConf?.label ?? "Ask Claude Code",
+			label: askConf?.label ?? "Ask Claude",
 			description: askConf?.description ?? (allowFull ? DEFAULT_TOOL_DESCRIPTION_FULL : DEFAULT_TOOL_DESCRIPTION),
 			parameters: askClaudeParams,
 			// Without full mode it can only read, so OMP's approval tier can say so.
@@ -1887,15 +1896,15 @@ export default function (pi: ExtensionAPI) {
 			renderResult(result, { expanded, isPartial }, theme) {
 				if (isPartial) {
 					const status = result.content[0]?.type === "text" ? result.content[0].text : "working...";
-					return new Text(theme.fg("mdLink", "◉ Claude Code ") + theme.fg("muted", status), 0, 0);
+					return new Text(theme.fg("mdLink", "◉ Claude ") + theme.fg("muted", status), 0, 0);
 				}
 
 				const details = result.details as { prompt?: string; executionTime?: number; actions?: string; error?: boolean } | undefined;
 				const body = result.content[0]?.type === "text" ? result.content[0].text : "";
 
 				let text = details?.error
-					? theme.fg("error", "✗ Claude Code error")
-					: theme.fg("mdLink", "✓ Claude Code");
+					? theme.fg("error", "✗ Claude error")
+					: theme.fg("mdLink", "✓ Claude");
 
 				if (details?.executionTime) text += ` ${theme.fg("dim", `${(details.executionTime / 1000).toFixed(1)}s`)}`;
 				if (details?.actions) text += ` ${theme.fg("muted", details.actions)}`;
@@ -1956,7 +1965,7 @@ export default function (pi: ExtensionAPI) {
 					const actions = buildActionSummary(toolCalls);
 
 					const text = actions
-						? `${result.responseText}\n\n[Claude Code actions: ${actions}]`
+						? `${result.responseText}\n\n[Claude actions: ${actions}]`
 						: result.responseText;
 					return {
 						content: [{ type: "text" as const, text }],

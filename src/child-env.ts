@@ -34,8 +34,10 @@ const PARENT_SESSION_VARS = [
 ];
 
 // Variables that send Claude Code somewhere other than the user's claude.ai login.
-// In "subscription" mode they are removed so an API key or gateway exported for some
-// other tool can't silently redirect (and bill) the bridge.
+// Default ("inherit") leaves them alone: Anthropic's terms for products that run
+// Claude Code forbid removing or restricting any of its built-in auth methods, so the
+// bridge only *reports* them (authRouteNotice). "subscription" removes them, as the
+// user's own explicit choice.
 const NON_SUBSCRIPTION_AUTH_VARS = [
 	"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
 	"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
@@ -47,8 +49,28 @@ export interface ChildEnvOptions {
 	clientApp?: string;
 }
 
+/**
+ * Describes auth/routing variables that would make Claude Code bill something other
+ * than the user's claude.ai login, or undefined when there are none. A base URL that
+ * is Anthropic's own API is not a different route.
+ */
+export function authRouteNotice(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const found = NON_SUBSCRIPTION_AUTH_VARS.filter((name) => {
+		const value = env[name];
+		if (!value) return false;
+		if (name === "ANTHROPIC_BASE_URL") {
+			try { return new URL(value).hostname !== "api.anthropic.com"; } catch { return true; }
+		}
+		return true;
+	});
+	if (!found.length) return undefined;
+	return `claude-bridge: ${found.join(", ")} ${found.length === 1 ? "is" : "are"} set, so Claude Code will use ` +
+		`${found.length === 1 ? "it" : "them"} instead of your Claude login (and bill accordingly). ` +
+		`Set provider.billing to "subscription" in claude-bridge.json to use only your Claude login.`;
+}
+
 export function ccChildEnv(opts: ChildEnvOptions = {}, parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-	const billing = opts.billing ?? "subscription";
+	const billing = opts.billing ?? "inherit";
 	const env: NodeJS.ProcessEnv = { ...parent };
 	if (parent.CLAUDECODE) for (const name of PARENT_SESSION_VARS) delete env[name];
 	if (billing === "subscription") for (const name of NON_SUBSCRIPTION_AUTH_VARS) delete env[name];

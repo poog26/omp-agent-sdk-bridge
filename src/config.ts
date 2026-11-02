@@ -40,7 +40,7 @@ export interface Config {
 		forward?: ForwardSettings;
 	};
 	provider?: {
-		/** "subscription" (default): claude.ai login only; "apiKey": ANTHROPIC_API_KEY; "inherit": environment as-is. */
+		/** "inherit" (default): Claude Code picks its login as usual; "subscription": claude.ai login only; "apiKey": ANTHROPIC_API_KEY. */
 		billing?: BillingMode;
 		/** Keep going when a request is billed to Extra Usage. Default false: the turn stops. */
 		allowExtraUsage?: boolean;
@@ -92,7 +92,7 @@ export function globalConfigPath(): string {
 export function validateConfig(config: Config, warn: (msg: string) => void = console.error): Config {
 	const p = config.provider ?? {};
 	if (p.billing !== undefined && !BILLING_MODES.has(p.billing)) {
-		warn(`claude-bridge: invalid provider.billing "${String(p.billing)}", using "subscription"`);
+		warn(`claude-bridge: invalid provider.billing "${String(p.billing)}", using "inherit"`);
 		delete p.billing;
 	}
 	if (p.contextWindow !== undefined && !WINDOW_MODES.has(p.contextWindow)) {

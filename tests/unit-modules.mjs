@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ccChildEnv } from "../src/child-env.ts";
+import { authRouteNotice, ccChildEnv } from "../src/child-env.ts";
 import { effortFor, planThinking } from "../src/effort.ts";
 import { askClaudeToolPolicy, READ_ONLY_TOOLS } from "../src/askclaude-tools.ts";
 import { composeAppend, extractOmpPromptParts, isAgentPrompt } from "../src/omp-prompt.ts";
@@ -19,6 +19,20 @@ test("subscription billing strips API keys / gateways so the claude.ai login is 
 	assert.equal(env.CLAUDE_CODE_USE_BEDROCK, undefined);
 	assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, "tok", "setup-token subscription auth is kept");
 	assert.equal(env.PATH, "/bin");
+});
+
+test("default billing is inherit: Claude Code's auth methods are never removed unasked", () => {
+	const env = ccChildEnv({}, { ANTHROPIC_API_KEY: "sk-x", CLAUDE_CODE_USE_BEDROCK: "1" });
+	assert.equal(env.ANTHROPIC_API_KEY, "sk-x");
+	assert.equal(env.CLAUDE_CODE_USE_BEDROCK, "1");
+});
+
+test("authRouteNotice names variables that would bypass the Claude login, ignoring Anthropic's own URL", () => {
+	assert.equal(authRouteNotice({}), undefined);
+	assert.equal(authRouteNotice({ ANTHROPIC_BASE_URL: "https://api.anthropic.com" }), undefined);
+	assert.match(authRouteNotice({ ANTHROPIC_API_KEY: "sk" }), /ANTHROPIC_API_KEY is set/);
+	assert.match(authRouteNotice({ ANTHROPIC_BASE_URL: "http://localhost:8080", CLAUDE_CODE_USE_VERTEX: "1" }), /ANTHROPIC_BASE_URL, CLAUDE_CODE_USE_VERTEX are set/);
+	assert.doesNotMatch(authRouteNotice({ ANTHROPIC_API_KEY: "sk-secret" }), /sk-secret/, "never echoes values");
 });
 
 test("apiKey billing requires a key; inherit leaves auth alone", () => {

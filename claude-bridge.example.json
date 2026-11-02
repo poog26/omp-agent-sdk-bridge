@@ -1,6 +1,6 @@
 {
   "provider": {
-    "billing": "subscription",
+    "billing": "inherit",
     "allowExtraUsage": false,
     "plan": "pro",
     "contextWindow": "auto",

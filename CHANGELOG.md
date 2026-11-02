@@ -19,8 +19,13 @@ and Claude Agent SDK 0.3.308.
   "environment" and `~/.omp` to `~/.claude`, which hid the harness and broke paths.
 - Identify the bridge through `CLAUDE_AGENT_SDK_CLIENT_APP`; drop a parent Claude
   Code session's markers so the SDK's own attribution is used.
-- `provider.billing` (`subscription` default / `apiKey` / `inherit`): subscription
-  mode strips API keys and gateway URLs so nothing silently redirects billing.
+- `provider.billing` (`inherit` default / `subscription` / `apiKey`). The default
+  leaves Claude Code's auth untouched, as Anthropic's terms require of products that
+  run it, and warns once when an API key, gateway URL or cloud switch would bill
+  something other than the Claude login; `subscription` strips those as an opt-in.
+- AskClaude UI no longer uses "Claude Code" as a feature name or badge ("Ask Claude").
+- README: a "using it within the terms in OMP" checklist, including not logging in
+  to OMP's built-in Anthropic provider with a Claude subscription.
 - Extra Usage guard: a request billed to Extra Usage is reported and the turn is
   stopped unless `provider.allowExtraUsage` is set. Extra Usage / login errors get
   actionable messages.

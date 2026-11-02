@@ -10,7 +10,7 @@ An [Oh My Pi](https://omp.sh) extension that uses the official [Claude Agent SDK
 
 - **Claude in `/model`**: every Claude model in OMP's catalog appears automatically (Fable, Opus, Sonnet, Haiku), at 1M wherever your plan includes it.
 - **Your OMP setup reaches Claude**: your `PERSONALITY.md`, skills, rules, AGENTS.md/context files and `APPEND_SYSTEM.md` are forwarded verbatim.
-- **No surprise billing**: subscription-only auth by default, and the bridge stops a turn that would be billed to Extra Usage unless you opt in.
+- **No surprise billing**: a warning when your environment would bill something other than your Claude login, and the bridge stops a turn that would be billed to Extra Usage unless you opt in.
 - **AskClaude tool**: when another provider is active, delegate a review or question to Claude (read-only by default).
 
 Requires OMP ≥ 18.15 and a working Claude Code login. Tested on Windows 11 with OMP 18.15 and Claude Code 2.1.308.
@@ -22,13 +22,21 @@ This fork stays inside Anthropic's published terms, and the design choices below
 | | |
 | --- | --- |
 | **Uses the official Agent SDK and the unmodified Claude Code binary** | Anthropic's [legal & compliance page](https://code.claude.com/docs/en/legal-and-compliance) explicitly allows *"an end user signing in to the unmodified Claude Code binary with their own Claude subscription"*. Its [plan article](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) (updated October 7, 2026) says Agent SDK usage signed in with your plan draws from your subscription limits. |
-| **Never touches credentials** | Login happens in Claude Code (`claude` → `/login`) through Anthropic's own flow. The bridge never reads, stores or forwards tokens. |
+| **Never touches credentials** | Login happens in Claude Code (`claude` → `/login`) through Anthropic's own flow. The bridge never reads, stores or forwards tokens, and sends nothing through a proxy: Claude Code talks to Anthropic directly. |
+| **Leaves Claude Code's login options alone** | Products that run Claude Code may not *"remove, disable, or restrict any authentication method built into it"*. By default the bridge passes your environment through unchanged and only *warns* if it would route Claude somewhere other than your Claude login. Restricting to the Claude login (`billing: "subscription"`) is your own opt-in. |
 | **Honest attribution** | Requests carry the SDK's genuine `cc_entrypoint=sdk-ts` attribution, and the bridge names itself via `CLAUDE_AGENT_SDK_CLIENT_APP=omp-agent-sdk-bridge/<version>`, the mechanism the SDK documents for apps built on it. Nothing is spoofed. |
 | **Forwards your words as written** | Earlier versions rewrote "omp" → "environment" and `~/.omp` → `~/.claude` in your AGENTS.md. This fork forwards your content verbatim. |
-| **Respects billing classification** | If Anthropic classifies a request as Extra Usage, the bridge reports it and (by default) stops. It does not reshape prompts to avoid that classification. |
+| **Respects billing classification** | If Anthropic classifies a request as Extra Usage, the bridge reports it and (by default) stops. To be transparent: OMP's own harness instructions are left out of the prompt because Claude Code's preset already provides the agent framework (see [What reaches Claude](#what-reaches-claude)), not to influence billing, and nothing is renamed or disguised. |
 | **For personal use** | The terms forbid *developers* offering claude.ai login to *their users*, or routing requests through other people's plans. Use this with your own login on your own machine. Don't host it for others or share a login. |
 
-Usage limits on Pro/Max/Ultra *"assume ordinary, individual usage of Claude Code and the Agent SDK"*, and Anthropic reserves the right to enforce without notice. Heavy automated use (many parallel subagents around the clock) is where you'd be on thinnest ice. If you want zero ambiguity, set `"billing": "apiKey"` and use a Claude Console key.
+Usage limits on Pro/Max/Ultra *"assume ordinary, individual usage of Claude Code and the Agent SDK"*, and Anthropic reserves the right to enforce without notice. If you want zero ambiguity, set `"billing": "apiKey"` and use a Claude Console key.
+
+**Using it within the terms in OMP**
+
+- **Don't log in to OMP's built-in `anthropic` provider with your Claude Pro/Max account** (OMP's `/login` → Anthropic). That gives a third-party app your claude.ai token, which is exactly what the terms prohibit. Use the `claude-bridge/…` models; they go through Claude Code's own login.
+- Use your own Claude login, on your own machine, for your own work. Don't share the login or run the bridge for other people.
+- Keep it to ordinary, interactive use. Avoid pointing OMP's background roles (`modelRoles` such as `smol`, scheduled or always-on agents) at `claude-bridge/…` models, and avoid large always-on subagent fleets on a subscription. Use an API key for that kind of automation.
+- Your prompts remain subject to Anthropic's [Usage Policy](https://www.anthropic.com/legal/aup), as they would be in Claude Code.
 
 ## Install
 
@@ -94,7 +102,8 @@ Kept **out** of bridge turns by default, because OMP owns these:
 
 ## Billing and limits
 
-- `provider.billing: "subscription"` (default) removes `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` and cloud-provider switches from Claude Code's environment, so a key exported for some other tool can't silently redirect (and bill) the bridge. `"apiKey"` requires a Claude Console key; `"inherit"` passes the environment through unchanged.
+- `provider.billing: "inherit"` (default) leaves Claude Code's environment as it is, so it chooses its login exactly as when you run `claude` yourself. If `ANTHROPIC_API_KEY`, a non-Anthropic `ANTHROPIC_BASE_URL` or a cloud-provider switch is set, the bridge warns once per session that requests will bill that instead of your Claude login.
+- `provider.billing: "subscription"` removes `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` and cloud-provider switches from Claude Code's environment, so a key exported for some other tool can't silently redirect (and bill) the bridge. `"apiKey"` requires a Claude Console key; `"inherit"` passes the environment through unchanged.
 - Rate-limit toasts at 80%+ of a window (5-hour / weekly), with the real reset time.
 - **Extra Usage guard**: when a request is billed to Extra Usage, the bridge says so and stops the turn. Set `provider.allowExtraUsage: true` to continue on Extra Usage.
 
@@ -120,7 +129,7 @@ Global: `~/.omp/agent/claude-bridge.json`. Project: `.omp/claude-bridge.json`, w
 
 | Key | Default | |
 | --- | --- | --- |
-| `billing` | `"subscription"` | `"subscription"`, `"apiKey"` or `"inherit"`. |
+| `billing` | `"inherit"` | `"inherit"`, `"subscription"` (Claude login only) or `"apiKey"`. |
 | `allowExtraUsage` | `false` | Keep going when a request is billed to Extra Usage. |
 | `plan` | `"pro"` | `"max"` defaults Opus 4.6 to 1M. |
 | `longContextExtraUsage` | `false` | Metered 1M for Sonnet 4.6 / Opus 4.6 on Pro. |
