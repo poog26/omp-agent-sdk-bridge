@@ -86,16 +86,18 @@ Claude Code's own `claude_code` system prompt stays the agent framework. Appende
 
 | From OMP | Forwarded | Setting |
 | --- | --- | --- |
-| Personality (`PERSONALITY.md` or preset) | yes | `provider.forward.personality` |
+| Personality (`PERSONALITY.md` or preset) | yes, as Claude Code's **output style** (see below) | `provider.forward.personality`, `provider.personaAs` |
 | Skills, always-apply rules, domain rules | yes; `skill://` / `rule://` read through OMP's tool | `provider.forward.skills` |
 | `<project-context>`: workstation, AGENTS.md / context files, workspace tree | yes | `provider.forward.projectContext` |
 | `APPEND_SYSTEM.md` / `--append-system-prompt` | yes | `provider.forward.appendText` |
 | OMP's harness instructions (role, tool policy, workflow) | no: Claude Code's preset covers this, and two frameworks in one prompt compete | — |
 
+**Your OMP persona is the voice, not Claude Code's CLI tone.** Claude Code's prompt contains a tone section written for a terminal ("be concise", CLI formatting). Output styles are Claude Code's own feature for replacing exactly that section. The bridge writes OMP's personality block into a small plugin it owns (`~/.omp/agent/claude-bridge/persona-plugin/`) and selects it as the output style, with `keep-coding-instructions: true` so Claude keeps its coding guidance. `PERSONALITY.md` stays the single source: edit it and the next session picks it up. Nothing is written into your `~/.claude`.
+
 Kept **out** of bridge turns by default, because OMP owns these:
 
 - your `~/.claude/settings.json` **hooks** (notifications, memory capture…) → `provider.claudeHooks: true` to allow
-- your Claude Code **output style** → `provider.claudeOutputStyle: true`
+- your Claude Code **output style** (OMP's persona takes its place) → `provider.claudeOutputStyle: true` to use yours instead
 - Claude Code's own `CLAUDE.md` / `AGENTS.md` loading (OMP already forwards context files)
 - Claude Code auto-memory → `provider.autoMemoryEnabled: true`
 - MCP servers from `~/.claude.json` / `.mcp.json` and claude.ai connectors
@@ -139,7 +141,8 @@ Global: `~/.omp/agent/claude-bridge.json`. Project: `.omp/claude-bridge.json`, w
 | `excludeModels` | `["mythos"]` | Id substrings hidden from the picker. |
 | `forward` | all `true` | `personality`, `skills`, `projectContext`, `appendText`. |
 | `claudeHooks` | `false` | Run `~/.claude/settings.json` hooks on bridge turns. |
-| `claudeOutputStyle` | `false` | Apply your Claude Code output style. |
+| `personaAs` | `"outputStyle"` | `"outputStyle"`: OMP's persona replaces Claude Code's terminal-tone section. `"append"`: added after Claude Code's prompt instead. |
+| `claudeOutputStyle` | `false` | Use your own Claude Code output style instead of OMP's persona. |
 | `autoMemoryEnabled` | `false` | Let Claude Code write its auto-memory. |
 | `strictMcpConfig` | `true` | Ignore MCP servers from `~/.claude.json` / `.mcp.json`. |
 | `pathToClaudeCodeExecutable` | — | Use this `claude` binary instead of the SDK's bundled one. |

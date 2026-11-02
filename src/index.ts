@@ -19,6 +19,7 @@ import { extractAllToolResults as _extractAllToolResults, type McpResult } from 
 import { QueryContext, ctx } from "./query-state.js";
 import { loadConfig, type Config, type ForwardSettings } from "./config.js";
 import { composeAppend, extractOmpPromptParts, isAgentPrompt } from "./omp-prompt.js";
+import { ensurePersonaStyle, type PersonaStyle } from "./persona-style.js";
 import { authRouteNotice, ccChildEnv } from "./child-env.js";
 import { planThinking, type ThinkingPlan } from "./effort.js";
 import { askClaudeToolPolicy, type AskClaudeMode } from "./askclaude-tools.js";
@@ -182,14 +183,29 @@ function childEnv(): NodeJS.ProcessEnv {
 //   includeGitInstructions: false keeps a git-status snapshot out of the cached
 //     system block, so commits and staging don't bust the prompt cache.
 const CLAUDE_MD_EXCLUDES = ["**/CLAUDE.md", "**/AGENTS.md", "**/.claude/rules/**"];
-function claudeSettings(opts: { gitInstructions?: boolean } = {}) {
+function claudeSettings(opts: { gitInstructions?: boolean; outputStyle?: string } = {}) {
 	return {
 		claudeMdExcludes: CLAUDE_MD_EXCLUDES,
 		autoMemoryEnabled: providerSettings.autoMemoryEnabled ?? false,
 		...(providerSettings.claudeHooks ? {} : { disableAllHooks: true }),
-		...(providerSettings.claudeOutputStyle ? {} : { outputStyle: "default" }),
+		...(opts.outputStyle ? { outputStyle: opts.outputStyle } : providerSettings.claudeOutputStyle ? {} : { outputStyle: "default" }),
 		...(opts.gitInstructions ? {} : { includeGitInstructions: false }),
 	};
+}
+
+// OMP's personality becomes Claude Code's output style (replacing the preset's
+// terminal-tone section) unless the user opted into Claude Code's own style or
+// into plain appending. Falls back to appending if the style can't be written.
+const PERSONA_PLUGIN_DIR = join(getAgentDir(), "claude-bridge", "persona-plugin");
+function personaStyleFor(personality: string | undefined, forward: ForwardSettings): PersonaStyle | undefined {
+	if (!personality || forward.personality === false) return undefined;
+	if (providerSettings.claudeOutputStyle || providerSettings.personaAs === "append") return undefined;
+	try {
+		return ensurePersonaStyle(personality, PERSONA_PLUGIN_DIR);
+	} catch (e) {
+		debug("persona style: could not write output style, appending persona instead", e);
+		return undefined;
+	}
 }
 
 function thinkingOptions(plan: ThinkingPlan): { effort?: ThinkingPlan["effort"]; thinking?: { type: "disabled" } } {
@@ -1313,7 +1329,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		: promptText;
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
 	// OMP's persona, skills/rules, project context and append text, verbatim.
-	const systemPromptAppend = composeAppend(extractOmpPromptParts(context.systemPrompt), forwardSettings(providerSettings.forward));
+	const promptParts = extractOmpPromptParts(context.systemPrompt);
+	const forward = forwardSettings(providerSettings.forward);
+	const personaStyle = personaStyleFor(promptParts.personality, forward);
+	// With the persona delivered as the output style, don't append it a second time.
+	const systemPromptAppend = composeAppend(promptParts, personaStyle ? { ...forward, personality: false } : forward);
 
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
@@ -1340,7 +1360,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// and apiKeyHelper, and non-interactive Claude Code trusts the workspace, so they
 		// would run with no prompt. ~/.claude/settings.json keeps env/apiKeyHelper.
 		settingSources: ["user"] as SettingSource[],
-		settings: claudeSettings(),
+		settings: claudeSettings({ outputStyle: personaStyle?.outputStyle }),
+		...(personaStyle ? { plugins: [{ type: "local" as const, path: personaStyle.pluginPath, skipMcpDiscovery: true }] } : {}),
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
 			append: systemPromptAppend,
@@ -1359,7 +1380,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
 		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${thinking.effort ?? (thinking.disabled ? "off" : "default")}`,
-		`append=${systemPromptAppend?.length ?? 0}ch strictMcp=${strictMcpConfigEnabled} session=${sessionKey}${ephemeral ? " (side)" : ""}`,
+		`append=${systemPromptAppend?.length ?? 0}ch persona=${personaStyle ? "output-style" : promptParts.personality ? "appended" : "none"} strictMcp=${strictMcpConfigEnabled} session=${sessionKey}${ephemeral ? " (side)" : ""}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
 	// 3. Start SDK query and claim it for this context

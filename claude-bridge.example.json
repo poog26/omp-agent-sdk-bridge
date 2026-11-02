@@ -5,6 +5,7 @@
     "plan": "pro",
     "contextWindow": "auto",
     "longContextExtraUsage": false,
+    "personaAs": "outputStyle",
     "forward": {
       "personality": true,
       "skills": true,

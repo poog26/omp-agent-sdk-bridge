@@ -56,6 +56,8 @@ export interface Config {
 		excludeModels?: string[];
 		/** What of OMP's prompt reaches Claude on the provider path. All on by default. */
 		forward?: ForwardSettings;
+		/** How OMP's personality reaches Claude: "outputStyle" (default) replaces Claude Code's terminal-tone section; "append" adds it after the preset. */
+		personaAs?: "outputStyle" | "append";
 		/** Run hooks from ~/.claude/settings.json on bridge turns. Default false: OMP owns hooks. */
 		claudeHooks?: boolean;
 		/** Apply Claude Code's configured output style. Default false: OMP owns persona. */
@@ -98,6 +100,10 @@ export function validateConfig(config: Config, warn: (msg: string) => void = con
 	if (p.contextWindow !== undefined && !WINDOW_MODES.has(p.contextWindow)) {
 		warn(`claude-bridge: invalid provider.contextWindow "${String(p.contextWindow)}", using "auto"`);
 		delete p.contextWindow;
+	}
+	if (p.personaAs !== undefined && p.personaAs !== "outputStyle" && p.personaAs !== "append") {
+		warn(`claude-bridge: invalid provider.personaAs "${String(p.personaAs)}", using "outputStyle"`);
+		delete p.personaAs;
 	}
 	if (p.plan !== undefined && p.plan !== "pro" && p.plan !== "max") {
 		warn(`claude-bridge: invalid provider.plan "${String(p.plan)}", using "pro"`);

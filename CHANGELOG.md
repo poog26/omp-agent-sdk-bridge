@@ -10,6 +10,9 @@ First release of the poog26 fork, renamed **omp-agent-sdk-bridge**. Targets Oh M
 and Claude Agent SDK 0.3.308.
 
 ### Changed
+- OMP's personality is delivered as Claude Code's output style (from a bridge-owned local
+  plugin), replacing the preset's terminal-tone section instead of being appended after it.
+  `provider.personaAs: "append"` restores appending.
 - Models with 1M included on every plan (Fable 5 / 5.1, Opus 5.5 / 5 / 4.8 / 4.7,
   Sonnet 5.5 / 5, Haiku 5.5) get a single picker entry. The 1M / 200K pair stays
   only where the window is a plan difference (Opus 4.6, Sonnet 4.6) or unmeasured.

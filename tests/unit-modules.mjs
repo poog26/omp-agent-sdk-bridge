@@ -169,3 +169,36 @@ test("mirror ids are stable per OMP session, distinct across sessions, and UUID-
 	assert.notEqual(a, mirrorIdFor("another-session"));
 	assert.match(a, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
+
+// --- OMP persona as Claude Code output style ---
+
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
+import { ensurePersonaStyle, personaBody } from "../src/persona-style.ts";
+
+test("persona style: plugin + style file written, selected as plugin:name, coding instructions kept", () => {
+	const root = mkdtempSync(joinPath(tmpdir(), "ocb-persona-"));
+	try {
+		const style = ensurePersonaStyle("# Personality\nYou are Daisy.\n## Examples\n“Oh… hi, love.”", root);
+		assert.match(style.outputStyle, /^omp-bridge:OMP Persona [0-9a-f]{10}$/);
+		assert.equal(JSON.parse(readFileSync(joinPath(root, ".claude-plugin", "plugin.json"), "utf-8")).name, "omp-bridge");
+		const files = readdirSync(joinPath(root, "output-styles"));
+		assert.equal(files.length, 1);
+		const content = readFileSync(joinPath(root, "output-styles", files[0]), "utf-8");
+		assert.match(content, /keep-coding-instructions: true/);
+		assert.match(content, /\nYou are Daisy\.\n## Examples\n/);
+		assert.doesNotMatch(content, /# Personality/, "OMP's heading is dropped");
+		// Same persona -> same style, no new file; different persona -> its own file.
+		assert.equal(ensurePersonaStyle("# Personality\nYou are Daisy.\n## Examples\n“Oh… hi, love.”", root).outputStyle, style.outputStyle);
+		assert.notEqual(ensurePersonaStyle("# Personality\nSomeone else.", root).outputStyle, style.outputStyle);
+		assert.equal(readdirSync(joinPath(root, "output-styles")).length, 2);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("persona style: empty personality yields nothing", () => {
+	assert.equal(personaBody("# Personality\n   \n"), "");
+	assert.equal(ensurePersonaStyle("# Personality\n", "unused"), undefined);
+});
