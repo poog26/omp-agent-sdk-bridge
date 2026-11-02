@@ -93,7 +93,7 @@ const block0 = [
 ].join("\n");
 const block1 = [
 	"<project-context>", "<workstation>", "- OS: win32", "</workstation>",
-	"<repo-rules>", '<file path="C:/Users/1/.omp/agent/AGENTS.md">', "Use ~/.omp/agent/PERSONALITY.md and run omp plugin list.", "</file>", "</repo-rules>",
+	"<repo-rules>", '<file path="C:/Users/me/.omp/agent/AGENTS.md">', "Use ~/.omp/agent/PERSONALITY.md and run omp plugin list.", "</file>", "</repo-rules>",
 	"</project-context>", "", "<critical>", "- harness critical", "</critical>", "", "APPEND TEXT",
 ].join("\n");
 
