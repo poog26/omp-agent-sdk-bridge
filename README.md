@@ -45,6 +45,8 @@ Usage limits on Pro/Max/Ultra *"assume ordinary, individual usage of Claude Code
 omp plugin install git:github.com/poog26/omp-agent-sdk-bridge
 ```
 
+Update later with `omp plugin upgrade omp-agent-sdk-bridge`.
+
 From a local checkout:
 
 ```bash
