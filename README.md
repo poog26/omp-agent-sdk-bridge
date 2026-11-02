@@ -35,7 +35,8 @@ Usage limits on Pro/Max/Ultra *"assume ordinary, individual usage of Claude Code
 
 - **Don't log in to OMP's built-in `anthropic` provider with your Claude Pro/Max account** (OMP's `/login` → Anthropic). That gives a third-party app your claude.ai token, which is exactly what the terms prohibit. Use the `claude-bridge/…` models; they go through Claude Code's own login.
 - Use your own Claude login, on your own machine, for your own work. Don't share the login or run the bridge for other people.
-- Keep it to ordinary, interactive use. Avoid pointing OMP's background roles (`modelRoles` such as `smol`, scheduled or always-on agents) at `claude-bridge/…` models, and avoid large always-on subagent fleets on a subscription. Use an API key for that kind of automation.
+- Keep unattended automation off your subscription. Scheduled or always-on agents, and large subagent fleets running while you're away, are where *"ordinary, individual usage"* ends; use an API key (`billing: "apiKey"`) for that.
+- OMP's background roles (`modelRoles` such as `smol`) are fine on `claude-bridge/…` models as far as the terms go: they serve your own interactive work, the way Claude Code uses a small model for titles and summaries. They do count against your plan limits and add a few seconds per call while Claude Code starts, so a cheap, fast model is usually the better pick for them.
 - Your prompts remain subject to Anthropic's [Usage Policy](https://www.anthropic.com/legal/aup), as they would be in Claude Code.
 
 ## Install
