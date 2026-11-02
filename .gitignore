@@ -22,3 +22,4 @@ claude-bridge.log
 .idea/
 .vscode/
 *.swp
+.tmp/

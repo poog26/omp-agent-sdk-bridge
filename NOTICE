@@ -1,8 +1,8 @@
 omp-claude-bridge
 =================
 
-This project is an Oh My Pi (OMP) port of the original "pi-claude-bridge"
-extension, extended with user-selectable Claude Code context-window controls.
+An Oh My Pi (OMP) extension that runs Claude Code through the official Claude
+Agent SDK. Maintained by poog26 (https://github.com/poog26/omp-claude-bridge).
 
 Original work
 -------------
@@ -11,19 +11,24 @@ Original work
   https://github.com/elidickinson/pi-claude-bridge
   Licensed under the MIT License.
 
-Derivative work
----------------
-  omp-claude-bridge
+Oh My Pi port
+-------------
+  omp-claude-bridge (0.7 - 0.8)
   Copyright (c) 2026 Jonathan Borgwing (https://github.com/DevVig)
   Licensed under the MIT License.
 
-  Changes from the original:
-    - Ported the extension from Pi (@earendil-works/*) to Oh My Pi
-      (@oh-my-pi/*), including the extension manifest, provider registration,
-      message conversion, and config directory resolution.
-    - Added a `provider.contextWindow` setting ("auto" | "1m" | "200k") that
-      forces the Claude Code context window across every model, hiding models
-      that have no runtime for the selected window.
+This fork
+---------
+  omp-claude-bridge (0.9 and later)
+  Copyright (c) 2026 poog26
+  Licensed under the MIT License.
 
-The original MIT copyright notice is retained in the LICENSE file, as required
-by the MIT License.
+  Changes are listed in CHANGELOG.md. Some fixes follow the analysis and
+  measurements published in pi-claude-bridge (session environment guards,
+  measured 1M context table, rate-limit units, Extra Usage handling).
+
+"Claude" and "Claude Code" are trademarks of Anthropic, PBC. This project is
+independent and is not built, endorsed or supported by Anthropic.
+
+The original MIT copyright notices are retained in the LICENSE file, as
+required by the MIT License.

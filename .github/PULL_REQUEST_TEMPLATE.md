@@ -11,8 +11,8 @@
 
 ## Checklist
 
-- [ ] `bun run typecheck` passes
-- [ ] `bun run test` passes
+- [ ] `npm run typecheck` passes
+- [ ] `npm test` and `npm run test:contract` pass
 - [ ] Context-routing changes include a case in `tests/unit-context-window.mjs`
 - [ ] For model-mapping changes, I noted how the served context window was verified
 

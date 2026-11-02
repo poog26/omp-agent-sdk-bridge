@@ -1,14 +1,30 @@
-// User-facing extension config. Loaded once at extension registration from
-// ~/.omp/agent/claude-bridge.json and the project OMP config directory, project
-// overriding global. Missing or unparseable files are ignored (error to
-// console.error, empty object returned) so the extension always starts.
+// User-facing extension config, loaded once at registration.
+//
+//   global:  <agentDir>/claude-bridge.json      (~/.omp/agent/claude-bridge.json)
+//   project: <cwd>/.omp/claude-bridge.json      (askClaude settings only)
+//
+// `provider` is read from the global file only. It decides which executable runs,
+// how requests are billed and which Claude Code hooks fire, so a cloned repository
+// must not be able to set it. Missing or unparseable files are ignored (error on
+// console.error) so the extension always starts.
 
-import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import type { BillingMode } from "./child-env.js";
+import type { AskClaudeMode } from "./askclaude-tools.js";
 import type { ContextWindowMode } from "./models.js";
-import { CONFIG_DIR_NAME } from "@oh-my-pi/pi-utils";
+import { CONFIG_DIR_NAME, getAgentDir } from "@oh-my-pi/pi-utils";
 import { existsSync, readFileSync } from "fs";
-import { homedir } from "os";
 import { join } from "path";
+
+export interface ForwardSettings {
+	/** OMP personality block (PERSONALITY.md or preset). */
+	personality?: boolean;
+	/** Skills, always-apply rules and domain rules. */
+	skills?: boolean;
+	/** <project-context>: workstation, AGENTS.md / context files, workspace tree. */
+	projectContext?: boolean;
+	/** APPEND_SYSTEM.md / --append-system-prompt text. */
+	appendText?: boolean;
+}
 
 export interface Config {
 	askClaude?: {
@@ -16,44 +32,104 @@ export interface Config {
 		name?: string;
 		label?: string;
 		description?: string;
-		defaultMode?: "full" | "read" | "none";
+		defaultMode?: AskClaudeMode;
+		defaultModel?: string;
 		defaultIsolated?: boolean;
 		allowFullMode?: boolean;
-		appendSkills?: boolean;
+		/** What of OMP's prompt reaches a delegated Claude. Personality is off by default. */
+		forward?: ForwardSettings;
 	};
-	/** Low-level Claude Agent SDK plumbing. Most users won't need these. */
 	provider?: {
-		appendSystemPrompt?: boolean;
-		settingSources?: SettingSource[];
-		strictMcpConfig?: boolean;
-		pathToClaudeCodeExecutable?: string;
-		// Subscription plan tier. Setting to "max" enables Opus 4.6 at 1M context
+		/** "subscription" (default): claude.ai login only; "apiKey": ANTHROPIC_API_KEY; "inherit": environment as-is. */
+		billing?: BillingMode;
+		/** Keep going when a request is billed to Extra Usage. Default false: the turn stops. */
+		allowExtraUsage?: boolean;
+		/** "max" enables Opus 4.6 at 1M by default. */
 		plan?: "pro" | "max";
-		// Set to true to opt into metered 1M context usage ("extra usage" in
-		// Anthropic billing). Enables Sonnet 4.6 [1m] on every plan and Opus 4.6
-		// [1m] on Pro.
+		/** Opt into metered 1M context for Sonnet 4.6 / Opus 4.6 on Pro. */
 		longContextExtraUsage?: boolean;
-		// Force the Claude Code context window for every model:
-		//   "auto" (default) - per-model policy, "1m" - force 1M, "200k" - force 200K.
+		/** Which window the unsuffixed model id uses. Both stay in the picker. */
 		contextWindow?: ContextWindowMode;
+		/** Model ids whose default window is pinned to 200K. */
+		forceTwoHundredK?: string[];
+		/** Substrings of model ids to hide from the picker. Default ["mythos"]. */
+		excludeModels?: string[];
+		/** What of OMP's prompt reaches Claude on the provider path. All on by default. */
+		forward?: ForwardSettings;
+		/** Run hooks from ~/.claude/settings.json on bridge turns. Default false: OMP owns hooks. */
+		claudeHooks?: boolean;
+		/** Apply Claude Code's configured output style. Default false: OMP owns persona. */
+		claudeOutputStyle?: boolean;
+		/** Let Claude Code write its auto-memory. Default false: OMP owns memory. */
+		autoMemoryEnabled?: boolean;
+		/** Block MCP servers from ~/.claude.json / .mcp.json. Default true. */
+		strictMcpConfig?: boolean;
+		/** Path to the claude binary when the SDK's bundled one can't run. */
+		pathToClaudeCodeExecutable?: string;
 	};
 }
+
+const BILLING_MODES = new Set(["subscription", "apiKey", "inherit"]);
+const WINDOW_MODES = new Set(["auto", "1m", "200k"]);
+const ASK_MODES = new Set(["read", "none", "full"]);
 
 export function tryParseJson(path: string): Partial<Config> {
 	if (!existsSync(path)) return {};
 	try {
-		return JSON.parse(readFileSync(path, "utf-8"));
+		const parsed = JSON.parse(readFileSync(path, "utf-8"));
+		return parsed && typeof parsed === "object" ? parsed : {};
 	} catch (e) {
 		console.error(`claude-bridge: failed to parse ${path}: ${e}`);
 		return {};
 	}
 }
 
-export function loadConfig(cwd: string): Config {
-	const global = tryParseJson(join(homedir(), ".omp", "agent", "claude-bridge.json"));
+export function globalConfigPath(): string {
+	return join(getAgentDir(), "claude-bridge.json");
+}
+
+/** Drop invalid enum values (with a warning) so a typo never breaks startup. */
+export function validateConfig(config: Config, warn: (msg: string) => void = console.error): Config {
+	const p = config.provider ?? {};
+	if (p.billing !== undefined && !BILLING_MODES.has(p.billing)) {
+		warn(`claude-bridge: invalid provider.billing "${String(p.billing)}", using "subscription"`);
+		delete p.billing;
+	}
+	if (p.contextWindow !== undefined && !WINDOW_MODES.has(p.contextWindow)) {
+		warn(`claude-bridge: invalid provider.contextWindow "${String(p.contextWindow)}", using "auto"`);
+		delete p.contextWindow;
+	}
+	if (p.plan !== undefined && p.plan !== "pro" && p.plan !== "max") {
+		warn(`claude-bridge: invalid provider.plan "${String(p.plan)}", using "pro"`);
+		delete p.plan;
+	}
+	const a = config.askClaude ?? {};
+	if (a.defaultMode !== undefined && !ASK_MODES.has(a.defaultMode)) {
+		warn(`claude-bridge: invalid askClaude.defaultMode "${String(a.defaultMode)}", using "read"`);
+		delete a.defaultMode;
+	}
+	return { askClaude: a, provider: p };
+}
+
+export function loadConfig(cwd: string, globalPath: string = globalConfigPath()): Config {
+	const global = tryParseJson(globalPath);
 	const project = tryParseJson(join(cwd, CONFIG_DIR_NAME, "claude-bridge.json"));
+	if (project.provider) {
+		console.error(`claude-bridge: ignoring "provider" in ${join(cwd, CONFIG_DIR_NAME, "claude-bridge.json")}; provider settings are global-only`);
+	}
+	return validateConfig({
+		askClaude: { ...global.askClaude, ...narrowOnly(project.askClaude) },
+		provider: { ...global.provider },
+	});
+}
+
+/** A project may restrict AskClaude but not widen it into unattended write/bash access. */
+function narrowOnly(askClaude: Config["askClaude"]): Config["askClaude"] {
+	if (!askClaude) return {};
+	const { defaultMode, allowFullMode, ...rest } = askClaude;
 	return {
-		askClaude: { ...global.askClaude, ...project.askClaude },
-		provider: { ...global.provider, ...project.provider },
+		...rest,
+		...(defaultMode !== undefined && defaultMode !== "full" ? { defaultMode } : {}),
+		...(allowFullMode === false ? { allowFullMode } : {}),
 	};
 }

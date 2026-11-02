@@ -1,8 +1,8 @@
 {
 	"name": "omp-claude-bridge",
-	"version": "0.8.1",
+	"version": "0.9.0",
 	"private": false,
-	"description": "Oh My Pi extension that runs Claude Code (via the Claude Agent SDK) as a model provider, adds an AskClaude delegation tool, and lets you force the 1M / 200K context window per provider.",
+	"description": "Oh My Pi extension that runs Claude Code (via the official Claude Agent SDK) as an OMP model provider, forwarding OMP's persona, skills and context, with switchable 1M / 200K windows and an AskClaude delegation tool.",
 	"keywords": [
 		"omp-package",
 		"oh-my-pi",
@@ -12,18 +12,19 @@
 		"context-window",
 		"1m-context"
 	],
-	"author": "Jonathan Borgwing (https://github.com/DevVig)",
+	"author": "poog26 (https://github.com/poog26)",
 	"contributors": [
-		"Eli Dickinson (original pi-claude-bridge author, https://github.com/elidickinson)"
+		"Eli Dickinson (original pi-claude-bridge, https://github.com/elidickinson)",
+		"Jonathan Borgwing (Oh My Pi port, https://github.com/DevVig)"
 	],
 	"license": "MIT",
-	"homepage": "https://github.com/DevVig/omp-claude-bridge#readme",
+	"homepage": "https://github.com/poog26/omp-claude-bridge#readme",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/DevVig/omp-claude-bridge.git"
+		"url": "git+https://github.com/poog26/omp-claude-bridge.git"
 	},
 	"bugs": {
-		"url": "https://github.com/DevVig/omp-claude-bridge/issues"
+		"url": "https://github.com/poog26/omp-claude-bridge/issues"
 	},
 	"engines": {
 		"node": ">=20"
@@ -33,28 +34,28 @@
 		"README.md",
 		"LICENSE",
 		"NOTICE",
-		"tsconfig.json",
-		"assets"
+		"tsconfig.json"
 	],
 	"scripts": {
 		"test": "node --import tsx --test tests/unit-*.mjs",
 		"test:unit": "node --import tsx --test tests/unit-*.mjs",
+		"test:contract": "node tests/run-contract.mjs",
+		"test:live": "bun tests/live-oneshot.ts && bun tests/live-askclaude.ts",
 		"typecheck": "tsc --noEmit"
 	},
 	"type": "module",
 	"dependencies": {
-		"@anthropic-ai/claude-agent-sdk": "^0.2.141",
-		"@anthropic-ai/sdk": "^0.73.0",
-		"cc-session-io": "^0.3.1",
+		"@anthropic-ai/claude-agent-sdk": "0.3.308",
+		"cc-session-io": "^0.4.0",
 		"change-case": "^5.4.4",
-		"typebox": "^1.3.0"
+		"zod": "^4.6.7"
 	},
 	"peerDependencies": {
-		"@oh-my-pi/pi-ai": ">=16.3.6",
-		"@oh-my-pi/pi-agent-core": ">=16.3.6",
-		"@oh-my-pi/pi-coding-agent": ">=16.3.6",
-		"@oh-my-pi/pi-tui": ">=16.3.6",
-		"@oh-my-pi/pi-utils": ">=16.3.6"
+		"@oh-my-pi/pi-agent-core": ">=18.15.0",
+		"@oh-my-pi/pi-ai": ">=18.15.0",
+		"@oh-my-pi/pi-coding-agent": ">=18.15.0",
+		"@oh-my-pi/pi-tui": ">=18.15.0",
+		"@oh-my-pi/pi-utils": ">=18.15.0"
 	},
 	"peerDependenciesMeta": {
 		"@oh-my-pi/pi-ai": {
@@ -74,11 +75,12 @@
 		}
 	},
 	"devDependencies": {
-		"@oh-my-pi/pi-ai": "^16.3.6",
-		"@oh-my-pi/pi-agent-core": "^16.3.6",
-		"@oh-my-pi/pi-coding-agent": "^16.3.6",
-		"@oh-my-pi/pi-tui": "^16.3.6",
-		"@oh-my-pi/pi-utils": "^16.3.6",
+		"@anthropic-ai/sdk": "^0.124.0",
+		"@oh-my-pi/pi-agent-core": "^18.15.0",
+		"@oh-my-pi/pi-ai": "^18.15.0",
+		"@oh-my-pi/pi-coding-agent": "^18.15.0",
+		"@oh-my-pi/pi-tui": "^18.15.0",
+		"@oh-my-pi/pi-utils": "^18.15.0",
 		"@types/node": "^24.13.2",
 		"tsx": "^4.22.4",
 		"typescript": "^6.0.3"

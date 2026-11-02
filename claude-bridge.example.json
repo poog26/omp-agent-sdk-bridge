@@ -1,13 +1,29 @@
 {
+  "provider": {
+    "billing": "subscription",
+    "allowExtraUsage": false,
+    "plan": "pro",
+    "contextWindow": "auto",
+    "longContextExtraUsage": false,
+    "forward": {
+      "personality": true,
+      "skills": true,
+      "projectContext": true,
+      "appendText": true
+    },
+    "claudeHooks": false,
+    "claudeOutputStyle": false,
+    "autoMemoryEnabled": false,
+    "strictMcpConfig": true
+  },
   "askClaude": {
     "enabled": true,
+    "defaultMode": "read",
+    "defaultModel": "opus",
+    "defaultIsolated": false,
     "allowFullMode": true,
-    "defaultIsolated": false
-  },
-  "provider": {
-    "contextWindow": "auto",
-    "plan": "pro",
-    "longContextExtraUsage": false,
-    "strictMcpConfig": true
+    "forward": {
+      "personality": false
+    }
   }
 }

@@ -6,14 +6,14 @@ sizes are welcome — bug reports, docs fixes, and features alike.
 ## Getting set up
 
 ```bash
-git clone https://github.com/DevVig/omp-claude-bridge.git
+git clone https://github.com/poog26/omp-claude-bridge.git
 cd omp-claude-bridge
-bun install        # or: npm install
+npm install
 ```
 
 Requirements:
 - Node.js >= 20
-- [Bun](https://bun.sh) (recommended) or npm
+- npm, plus [Bun](https://bun.sh) for the OMP contract and live tests
 - An Oh My Pi install for end-to-end testing ([omp.sh](https://omp.sh))
 
 ## Developing against a live Oh My Pi
@@ -21,24 +21,26 @@ Requirements:
 Point Oh My Pi at your working copy so changes load on the next run:
 
 ```bash
-pi install /absolute/path/to/omp-claude-bridge
+omp -e /absolute/path/to/omp-claude-bridge/src/index.ts   # one run
+omp plugin install /absolute/path/to/omp-claude-bridge   # persistent
 ```
 
 Enable debug logging while iterating:
 
 ```bash
-CLAUDE_BRIDGE_DEBUG=1 pi --list-models claude-bridge
+CLAUDE_BRIDGE_DEBUG=1 omp --list-models claude-bridge
 # logs -> ~/.omp/agent/claude-bridge.log
 ```
 
 ## Checks before opening a PR
 
 ```bash
-bun run typecheck   # tsc --noEmit
-bun run test        # node --test unit suite
+npm run typecheck
+npm test                 # unit tests
+npm run test:contract    # against OMP's real prompt builder (bun)
 ```
 
-Please make sure both pass. CI runs the same two checks on every pull request.
+Please make sure these pass. CI runs them on Linux and Windows for every pull request.
 
 ## Coding guidelines
 
@@ -46,6 +48,8 @@ Please make sure both pass. CI runs the same two checks on every pull request.
 - Keep model routing changes in `src/models.ts`. It has **no runtime imports**,
   so it stays unit-testable in isolation — add a case to
   `tests/unit-context-window.mjs` when you touch context routing.
+- Keep requests honestly attributed: forward user content verbatim and never
+  reshape prompts to influence Anthropic's billing classification.
 - Context-window behavior is derived from **measured** Claude Agent SDK output,
   not advertised metadata. If you change a model mapping, note how you verified
   the served window (the `result: served contextWindow=...` debug line).

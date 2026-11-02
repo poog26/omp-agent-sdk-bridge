@@ -53,7 +53,9 @@ export function convertPiMessages(
 	const sanitizedIds = new Map();
 
 	for (const msg of messages) {
-		if (msg.role === "user") {
+		// OMP 18 "developer" messages (auto-continue, injected notes) have no Claude Code
+		// counterpart; they reach the model as user-turn text rather than vanishing.
+		if (msg.role === "user" || msg.role === "developer") {
 			if (typeof msg.content === "string") {
 				anthropicMessages.push({ role: "user", content: msg.content || "[empty]" });
 			} else if (Array.isArray(msg.content)) {

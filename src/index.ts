@@ -1,28 +1,30 @@
 import { StringEnum, Type, getModels, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions, type Tool, type Usage } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-ai-shim";
 import * as piAi from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-ai-shim";
 import { type ExtensionAPI, type ExtensionUIContext } from "@oh-my-pi/pi-coding-agent";
-import { keyHint } from "@oh-my-pi/pi-coding-agent/modes/components/keybinding-hints";
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
-import type { CompactionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { compact } from "@oh-my-pi/pi-agent-core/compaction";
-import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { Text } from "@oh-my-pi/pi-tui";
+import { getAgentDir } from "@oh-my-pi/pi-utils";
 import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
-import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
-import { homedir } from "os";
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { buildVariantModels, buildModels, claudeCodeModelId, type ContextWindowMode, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
-import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
+import { buildVariantModels, buildModels, claudeCodeModelId, parseVariantId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
+import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
+import { mirrorIdFor } from "./session-id.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
-import { loadConfig, type Config } from "./config.js";
-import { extractAgentsAppend } from "./agents-md.js";
+import { loadConfig, type Config, type ForwardSettings } from "./config.js";
+import { composeAppend, extractOmpPromptParts, isAgentPrompt } from "./omp-prompt.js";
+import { ccChildEnv } from "./child-env.js";
+import { planThinking, type ThinkingPlan } from "./effort.js";
+import { askClaudeToolPolicy, type AskClaudeMode } from "./askclaude-tools.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
-import { rateLimitNotice } from "./rate-limit.js";
+import { explainClaudeError, isExtraUsage, newRateLimitTracker, rateLimitNotice, type RateLimitInfo } from "./rate-limit.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -43,8 +45,21 @@ function calculateCost(model: Model<any>, usage: Usage): Usage["cost"] {
 // CLAUDE_BRIDGE_DEBUG=1 enables debug logging to ~/.omp/agent/claude-bridge.log
 
 const DEBUG = process.env.CLAUDE_BRIDGE_DEBUG === "1";
-const DEBUG_LOG_PATH = process.env.CLAUDE_BRIDGE_DEBUG_PATH || join(homedir(), ".omp", "agent", "claude-bridge.log");
-const DIAG_LOG_PATH = join(homedir(), ".omp", "agent", "claude-bridge-diag.log");
+const DEBUG_LOG_PATH = process.env.CLAUDE_BRIDGE_DEBUG_PATH || join(getAgentDir(), "claude-bridge.log");
+const DIAG_LOG_PATH = join(getAgentDir(), "claude-bridge-diag.log");
+
+// Name + version for CLAUDE_AGENT_SDK_CLIENT_APP, so Claude Code's User-Agent says
+// which app is driving it.
+const BRIDGE_VERSION = (() => {
+	try {
+		const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+		return String(JSON.parse(readFileSync(pkgPath, "utf-8")).version ?? "dev");
+	} catch {
+		return "dev";
+	}
+})();
+const CLIENT_APP = `omp-claude-bridge/${BRIDGE_VERSION}`;
+const ISSUES_URL = "https://github.com/poog26/omp-claude-bridge/issues";
 
 // Ensure log directories exist when debug is enabled
 if (DEBUG) {
@@ -101,7 +116,11 @@ function makeCliDebugOptions(tag: string): { debug?: boolean; debugFile?: string
 function diagDump(label: string, data: Record<string, unknown>) {
 	const ts = new Date().toISOString();
 	const entry = { ts, moduleInstanceId, label, ...data };
-	appendFileSync(DIAG_LOG_PATH, JSON.stringify(entry) + "\n");
+	// Diagnostics must never take a turn down with them.
+	try {
+		mkdirSync(dirname(DIAG_LOG_PATH), { recursive: true });
+		appendFileSync(DIAG_LOG_PATH, JSON.stringify(entry) + "\n");
+	} catch { /* ignore */ }
 	debug(`DIAG: ${label} (see ${DIAG_LOG_PATH})`);
 }
 
@@ -127,13 +146,55 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
 };
 
-// MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
-const MODELS = buildModels(getModels("anthropic"));
+// Base (unsuffixed) models projected from OMP's Anthropic catalog; set at registration
+// once the exclude list is known.
+let MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false, contextWindow: "auto" };
+const rateLimitTracker = newRateLimitTracker();
 
 function resolveModel(input: string) {
 	return _resolveModel(MODELS, input);
+}
+
+/** Catalog window for a registered (possibly "-1m"/"-200k") id; drives the 1M offer for unmeasured models. */
+function catalogWindow(registeredId: string): number | undefined {
+	const { baseId } = parseVariantId(registeredId);
+	return MODELS.find((m) => m.id === baseId)?.contextWindow;
+}
+
+function cliModelFor(model: { id: string }): string {
+	return claudeCodeModelId(model, longContextSettings, catalogWindow(model.id));
+}
+
+function childEnv(): NodeJS.ProcessEnv {
+	return ccChildEnv({ billing: providerSettings.billing, clientApp: CLIENT_APP });
+}
+
+// Claude Code settings applied to every bridge-spawned process (flag tier, so they
+// override ~/.claude/settings.json).
+//   claudeMdExcludes: OMP already forwards its own context files; Claude Code loading
+//     CLAUDE.md/AGENTS.md as well would duplicate them, and ~/.claude/CLAUDE.md is a
+//     persona written for a different harness.
+//   disableAllHooks: hooks in ~/.claude/settings.json are written for interactive
+//     Claude Code (notifications, memory capture); OMP owns its own.
+//   outputStyle: OMP owns persona; a Claude Code output style would stack on top.
+//   includeGitInstructions: false keeps a git-status snapshot out of the cached
+//     system block, so commits and staging don't bust the prompt cache.
+const CLAUDE_MD_EXCLUDES = ["**/CLAUDE.md", "**/AGENTS.md", "**/.claude/rules/**"];
+function claudeSettings(opts: { gitInstructions?: boolean } = {}) {
+	return {
+		claudeMdExcludes: CLAUDE_MD_EXCLUDES,
+		autoMemoryEnabled: providerSettings.autoMemoryEnabled ?? false,
+		...(providerSettings.claudeHooks ? {} : { disableAllHooks: true }),
+		...(providerSettings.claudeOutputStyle ? {} : { outputStyle: "default" }),
+		...(opts.gitInstructions ? {} : { includeGitInstructions: false }),
+	};
+}
+
+function thinkingOptions(plan: ThinkingPlan): { effort?: ThinkingPlan["effort"]; thinking?: { type: "disabled" } } {
+	if (plan.disabled) return { thinking: { type: "disabled" } };
+	return plan.effort ? { effort: plan.effort } : {};
 }
 
 // --- Error handling ---
@@ -148,32 +209,6 @@ function errorMessage(err: unknown): string {
 	}
 	return String(err);
 }
-
-// AskClaude mode presets — controls which CC tools are blocked per mode.
-// Only block tools that can't work (no OMP TUI for user interaction).
-// Other CC tools (Agent, SendMessage, RemoteTrigger, Tasks, etc.) are intentionally not blocked.
-const ASKCLAUDE_ALWAYS_BLOCKED = [
-	"AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
-	"ToolSearch", // probes for blocked tools, wastes tokens
-	"ScheduleWakeup", // no harness to fire wakeup from inside a delegated subagent
-];
-const MODE_DISALLOWED_TOOLS: Record<string, string[]> = {
-	full: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
-	],
-	read: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
-		"Write", "Edit", "Bash", "NotebookEdit",
-		"EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "TeamCreate", "TeamDelete",
-	],
-	none: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
-		"Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent",
-		"NotebookEdit", "EnterWorktree", "ExitWorktree",
-		"CronCreate", "CronDelete", "TeamCreate", "TeamDelete",
-		"WebFetch", "WebSearch",
-	],
-};
 
 // --- Session persistence ---
 
@@ -197,7 +232,19 @@ interface SessionState {
 	forceRotate?: boolean;
 }
 
-let sharedSession: SessionState | null = null;
+// One Claude Code session mirror per OMP session (keyed by the stream options'
+// sessionId). A single global mirror let subagents, side requests and the main
+// conversation overwrite each other's session and prompt cache.
+const sessions = new Map<string, SessionState>();
+const DEFAULT_SESSION_KEY = "default";
+
+interface SessionSlot { s: SessionState | null }
+function sessionSlot(key: string): SessionSlot {
+	return {
+		get s() { return sessions.get(key) ?? null; },
+		set s(v: SessionState | null) { if (v) sessions.set(key, v); else sessions.delete(key); },
+	};
+}
 
 // Convert pi messages to Anthropic API format for session import.
 // Lossy: non-Anthropic thinking blocks are dropped (no valid signature), and only
@@ -246,7 +293,7 @@ function extractAllToolResults(context: Context): McpResult[] {
 /** Extract the last user message from context as a prompt string. Returns null if last message is not a user message. */
 function extractUserPrompt(messages: Context["messages"]): string | null {
 	const last = messages[messages.length - 1];
-	if (!last || last.role !== "user") return null;
+	if (!last || (last.role !== "user" && last.role !== "developer")) return null;
 	if (typeof last.content === "string") return last.content;
 	return messageContentToText(last.content) || "";
 }
@@ -255,7 +302,7 @@ function extractUserPrompt(messages: Context["messages"]): string | null {
  *  Returns null if no images — caller should fall back to string prompt. */
 function extractUserPromptBlocks(messages: Context["messages"]): ContentBlockParam[] | null {
 	const last = messages[messages.length - 1];
-	if (!last || last.role !== "user") return null;
+	if (!last || (last.role !== "user" && last.role !== "developer")) return null;
 	if (typeof last.content === "string") {
 		debug(`extractUserPromptBlocks: content is string (length=${last.content.length})`);
 		return null;
@@ -315,38 +362,57 @@ function systemPromptText(systemPrompt: Context["systemPrompt"] | string | undef
 }
 
 
-function extractIsolatedSummaryPrompt(messages: Context["messages"]): string {
-	if (messages.length !== 1 || messages[0].role !== "user") {
-		throw new Error(
-			`isolatedStreamFn: expected exactly 1 user message, got ${messages.length} ` +
-			`(${messages.map((m) => m.role).join(",")})`,
-		);
-	}
-	const promptText = extractUserPrompt(messages);
-	if (!promptText) throw new Error("isolatedStreamFn: summarization prompt is empty");
-	return promptText;
+// --- One-shot calls (compaction, titles, recaps, handoffs, /btw) ---
+//
+// OMP makes tool-less side calls through the active model: compaction summaries
+// (same sessionId as the live conversation), titles, idle recaps, handoffs. They
+// must never touch the conversation's Claude Code session, so they run as an
+// isolated, non-persisted, single-turn Claude Code query with OMP's own system
+// prompt for that call. Routing them here replaces the old session_before_compact
+// takeover, which raced OMP's extension-handler timeout.
+
+/** True for calls that are not a turn of the main agent loop. */
+function isOneShotCall(context: Context): boolean {
+	return !context.tools?.length || !isAgentPrompt(context.systemPrompt);
+}
+
+/** The whole transcript as one prompt: the last user turn verbatim, earlier turns labelled. */
+function oneShotPrompt(messages: Context["messages"]): string {
+	const text = (m: Context["messages"][number]): string => {
+		if (m.role === "assistant") {
+			return (Array.isArray(m.content) ? m.content : [])
+				.map((b: any) => b.type === "text" ? b.text : b.type === "toolCall" ? `[tool call ${b.name} ${JSON.stringify(b.arguments ?? {})}]` : "")
+				.filter(Boolean).join("\n");
+		}
+		const content = (m as { content?: unknown }).content;
+		return typeof content === "string" ? content : messageContentToText(content as any);
+	};
+	if (messages.length === 1) return text(messages[0]);
+	const label: Record<string, string> = { user: "User", developer: "System note", assistant: "Assistant", toolResult: "Tool result" };
+	return messages.map((m) => `## ${label[m.role] ?? m.role}\n${text(m)}`).join("\n\n");
 }
 
 function resultErrorText(message: SDKMessage): string {
-	const result = message as SDKMessage & { subtype?: string; errors?: unknown; error?: unknown };
-	if (Array.isArray(result.errors)) return result.errors.map(String).join("\n");
+	const result = message as SDKMessage & { subtype?: string; errors?: unknown; error?: unknown; result?: unknown };
+	if (Array.isArray(result.errors) && result.errors.length) return result.errors.map(String).join("\n");
 	if (typeof result.error === "string") return result.error;
-	return `Claude Code summary failed: ${result.subtype ?? "unknown result"}`;
+	if (typeof result.result === "string" && result.result) return result.result;
+	return `Claude Code failed: ${result.subtype ?? "unknown result"}`;
 }
 
-function isolatedStreamFn(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+/** Claude Code flags failures with is_error on a result whose subtype may still be "success". */
+function isErrorResult(message: SDKMessage): boolean {
+	const r = message as SDKMessage & { subtype?: string; is_error?: boolean };
+	return r.subtype !== "success" || r.is_error === true;
+}
+
+function oneShotStream(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const stream = newAssistantMessageEventStream();
-	void runIsolatedSummary(model, context, options, stream);
+	void runOneShot(model, context, options, stream);
 	return stream;
 }
 
-const isolatedCompleteImpl = (
-	model: Parameters<typeof isolatedStreamFn>[0],
-	context: Context,
-	options: SimpleStreamOptions,
-): Promise<AssistantMessage> => isolatedStreamFn(model, context, options).result();
-
-async function runIsolatedSummary(
+async function runOneShot(
 	model: Model<any>,
 	context: Context,
 	options: SimpleStreamOptions | undefined,
@@ -361,27 +427,35 @@ async function runIsolatedSummary(
 	};
 
 	try {
-		const promptText = extractIsolatedSummaryPrompt(context.messages);
+		const promptText = oneShotPrompt(context.messages);
+		if (!promptText.trim()) throw new Error("claude-bridge: one-shot call has an empty prompt");
 		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-		const claudeExecutable = loadConfig(cwd).provider?.pathToClaudeCodeExecutable;
-		const cliModel = claudeCodeModelId(model, longContextSettings);
-		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
+		const cliModel = cliModelFor(model);
+		const thinking = planThinking(model as any, options ?? {});
+		const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
+		const extraArgs: Record<string, string | null> = {};
+		if (thinking.display) extraArgs["thinking-display"] = thinking.display;
+		debug(`one-shot: spawn model=${cliModel} registered=${model.id} msgs=${context.messages.length} effort=${thinking.effort ?? (thinking.disabled ? "off" : "default")} promptLen=${promptText.length}`);
 
 		sdkQuery = query({
 			prompt: promptText,
 			options: {
 				cwd,
-				env: { ...process.env, DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
+				env: childEnv(),
 				tools: [],
 				strictMcpConfig: true,
 				settingSources: [] as SettingSource[],
+				settings: claudeSettings(),
 				skills: [],
 				persistSession: false,
-				systemPrompt: context.systemPrompt,
+				// OMP's own system prompt for this call (e.g. the summarizer's), not the preset.
+				systemPrompt: systemPromptText(context.systemPrompt) ?? "",
 				model: cliModel,
 				maxTurns: 1,
+				...thinkingOptions(thinking),
+				...(Object.keys(extraArgs).length ? { extraArgs } : {}),
 				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-				...makeCliDebugOptions("compact-summary"),
+				...makeCliDebugOptions("one-shot"),
 			},
 		});
 
@@ -393,52 +467,41 @@ async function runIsolatedSummary(
 		let assistantText = "";
 		let finalText = "";
 		let errorText: string | undefined;
-		let firstEventLogged = false;
 
 		for await (const message of sdkQuery) {
-			if (!firstEventLogged) {
-				debug(`compact summary: first event type=${message.type}`);
-				firstEventLogged = true;
-			}
 			if (wasAborted) break;
-
 			if (message.type === "assistant") {
 				for (const block of (message as any).message?.content ?? []) {
 					if (block.type === "text" && typeof block.text === "string") assistantText += block.text;
 				}
 			} else if (message.type === "result") {
-				logServedContextWindow("compact summary", message, model);
-				if (message.subtype === "success") {
-					finalText = message.result || assistantText;
-				} else {
-					errorText = resultErrorText(message);
-				}
+				logServedContextWindow("one-shot", message, model);
+				if (isErrorResult(message)) errorText = resultErrorText(message);
+				else finalText = (message as any).result || assistantText;
+			} else if (message.type === "rate_limit_event") {
+				reportRateLimit((message as any).rate_limit_info);
 			}
 		}
 
 		if (wasAborted) {
-			const output = newAssistantOutput(model, "", "aborted", "Operation aborted");
-			debug("compact summary: aborted");
-			stream.push({ type: "error", reason: "aborted", error: output });
+			stream.push({ type: "error", reason: "aborted", error: newAssistantOutput(model, "", "aborted", "Operation aborted") });
 			stream.end();
 			return;
 		}
-
 		const text = finalText || assistantText;
 		if (errorText || !text.trim()) {
-			const msg = errorText ?? "Claude Code summary returned empty text";
-			debug(`compact summary: error ${msg}`);
+			const msg = explainClaudeError(errorText ?? "Claude Code returned empty text");
+			debug(`one-shot: error ${msg}`);
 			stream.push({ type: "error", reason: "error", error: newAssistantOutput(model, "", "error", msg) });
 			stream.end();
 			return;
 		}
-
-		debug(`compact summary: done textLen=${text.length}`);
+		debug(`one-shot: done textLen=${text.length}`);
 		stream.push({ type: "done", reason: "stop", message: newAssistantOutput(model, text, "stop") });
 		stream.end();
 	} catch (err) {
-		const msg = errorMessage(err);
-		debug("runIsolatedSummary threw; pushing terminal error", err);
+		const msg = explainClaudeError(errorMessage(err));
+		debug("one-shot threw; pushing terminal error", err);
 		stream.push({ type: "error", reason: "error", error: newAssistantOutput(model, "", "error", msg) });
 		stream.end();
 	} finally {
@@ -447,20 +510,20 @@ async function runIsolatedSummary(
 	}
 }
 
-function reinjectPriorCompactionFileOps(branchEntries: Array<{ type: string; details?: unknown }>, preparation: { fileOps: { read: Set<string>; edited: Set<string> } }): void {
-	const prior = [...branchEntries]
-		.reverse()
-		.find((entry): entry is CompactionEntry => entry.type === "compaction");
-	const details = prior?.details as { readFiles?: unknown; modifiedFiles?: unknown } | undefined;
-	if (!Array.isArray(details?.readFiles) || !Array.isArray(details?.modifiedFiles)) return;
-	for (const file of details.readFiles) preparation.fileOps.read.add(String(file));
-	for (const file of details.modifiedFiles) preparation.fileOps.edited.add(String(file));
-	debug(`compact takeover: re-injected prior file ops read=${details.readFiles.length} modified=${details.modifiedFiles.length}`);
+/** Surface a rate-limit event. Returns true when the request is being billed to Extra Usage. */
+function reportRateLimit(info: RateLimitInfo | undefined): boolean {
+	if (!info) return false;
+	debug("rate_limit_event", JSON.stringify(info).slice(0, 300));
+	const notice = rateLimitNotice(info, rateLimitTracker);
+	if (notice) piUI?.notify(notice.message, notice.level === "info" ? "info" : notice.level === "error" ? "error" : "warning");
+	return isExtraUsage(info);
 }
 
 interface SyncResult {
 	sessionId: string | null;
 	preserveSharedSession?: boolean;
+	/** Clean start: the stable id Claude Code should give the new session. */
+	freshSessionId?: string;
 }
 
 /**
@@ -483,7 +546,7 @@ function verifyWrittenSession(
 		piUI?.notify(
 			`Session file issue: ${msg}\n` +
 			`cwd=${cwd} realpath=${safeRealpath(cwd)} CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR ?? "(unset)"}\n` +
-			`Please copy and paste this message into a new issue at https://github.com/elidickinson/pi-claude-bridge/issues/new` +
+			`Please report it at ${ISSUES_URL}` +
 			(DEBUG ? ` and attach ${DEBUG_LOG_PATH}` : ` (rerun with CLAUDE_BRIDGE_DEBUG=1 to capture a debug log)`),
 			"warning",
 		);
@@ -544,7 +607,9 @@ function syncSharedSession(
 	cwd: string,
 	customToolNameToSdk?: Map<string, string>,
 	modelId?: string,
+	key: string = DEFAULT_SESSION_KEY,
 ): SyncResult {
+	const slot = sessionSlot(key);
 	const priorMessages = messages.slice(0, -1); // everything before the new user prompt
 
 	// REUSE path
@@ -554,56 +619,60 @@ function syncSharedSession(
 	// pi-side history rewrites such as /compact and session_tree: without it,
 	// missed = [].slice(cursor) can falsely hit REUSE and resume an unrelated
 	// longer CC session. See issue #25.
-	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length >= sharedSession.cursor) {
-		const missed = priorMessages.slice(sharedSession.cursor);
+	if (slot.s && !slot.s.needsRebuild && priorMessages.length >= slot.s.cursor) {
+		const missed = priorMessages.slice(slot.s.cursor);
 		const trailingAssistantOnly =
 			missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";
 		if (missed.length === 0 || trailingAssistantOnly) {
 			if (trailingAssistantOnly) {
-				sharedSession = { ...sharedSession, cursor: priorMessages.length, cwd };
+				slot.s = { ...slot.s, cursor: priorMessages.length, cwd };
 			}
-			debug(`Case 3: ${trailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
-			debug(`syncResult: path=reuse sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
-			return { sessionId: sharedSession.sessionId };
+			debug(`Case 3: ${trailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${slot.s.sessionId.slice(0, 8)}, cursor=${slot.s.cursor}`);
+			debug(`syncResult: path=reuse sessionId=${slot.s.sessionId} cursor=${slot.s.cursor}`);
+			return { sessionId: slot.s.sessionId };
 		}
 	}
 	// Only reachable when needsRebuild is false — user-facing history rewrites
 	// (/compact, session_tree, /new, fork) always set needsRebuild or clear
-	// sharedSession before the next syncSharedSession call. In practice this
+	// slot.s before the next syncSharedSession call. In practice this
 	// fires only for isolated compact-summary subprocesses.
-	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length < sharedSession.cursor) {
-		debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
-		debug(`syncResult: path=clean-start preserve-shared sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
+	if (slot.s && !slot.s.needsRebuild && priorMessages.length < slot.s.cursor) {
+		debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${slot.s.sessionId.slice(0, 8)}, cursor=${slot.s.cursor}`);
+		debug(`syncResult: path=clean-start preserve-shared sessionId=${slot.s.sessionId} cursor=${slot.s.cursor}`);
 		return { sessionId: null, preserveSharedSession: true };
 	}
 
 	// REBUILD path
+	const stableId = key === DEFAULT_SESSION_KEY ? undefined : mirrorIdFor(key);
 	if (priorMessages.length === 0) {
 		debug(`Case 1: clean start, ${messages.length} total messages`);
-		debug(`syncResult: path=clean-start`);
-		return { sessionId: null };
+		debug(`syncResult: path=clean-start${stableId ? ` stableId=${stableId.slice(0, 8)}` : ""}`);
+		return { sessionId: null, freshSessionId: slot.s?.forceRotate ? undefined : stableId };
 	}
-	const previousSessionId = sharedSession?.sessionId;
-	const previousCursor = sharedSession?.cursor ?? 0;
+	const previousSessionId = slot.s?.sessionId;
+	const previousCursor = slot.s?.cursor ?? 0;
 	// preserveId: rebuild in place (deleteSession + createSession with the
 	// existing UUID), so prompt-cache UUIDs stay stable for log correlation
 	// and for any tools that key off them. Skipped only when there's a
 	// concurrent writer we shouldn't race — see forceRotate docs above.
-	const preserveId = previousSessionId !== undefined && !sharedSession?.forceRotate;
-	if (preserveId) {
+	const preserveId = previousSessionId !== undefined && !slot.s?.forceRotate;
+	// No mirror yet in this process (e.g. OMP restarted): reuse the OMP session's
+	// stable id, overwriting its old mirror rather than adding another file.
+	const targetId = preserveId ? previousSessionId : slot.s?.forceRotate ? undefined : stableId;
+	if (targetId) {
 		// Wipe prior jsonl + companion dir (no-op if nothing to wipe).
-		deleteSession(previousSessionId!, cwd, process.env.CLAUDE_CONFIG_DIR);
+		deleteSession(targetId, cwd, process.env.CLAUDE_CONFIG_DIR);
 	}
 	const session = createSession({
 		projectPath: cwd,
 		claudeDir: process.env.CLAUDE_CONFIG_DIR,
-		...(preserveId ? { sessionId: previousSessionId } : {}),
+		...(targetId ? { sessionId: targetId } : {}),
 		...(modelId ? { model: modelId } : {}),
 	});
 	convertAndImportMessages(session, priorMessages, customToolNameToSdk);
 	session.save();
 	verifyWrittenSession(session.jsonlPath, session.sessionId, session.messages.length, cwd);
-	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
+	slot.s = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
 	if (previousSessionId === undefined) {
 		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.messages.length} records`);
 	} else if (preserveId) {
@@ -619,14 +688,14 @@ function syncSharedSession(
 
 // @internal
 export const __test = {
-	resetSharedSession() {
-		sharedSession = null;
+	resetSharedSession(key: string = DEFAULT_SESSION_KEY) {
+		sessions.delete(key);
 	},
-	setSharedSession(state: SessionState | null) {
-		sharedSession = state;
+	setSharedSession(state: SessionState | null, key: string = DEFAULT_SESSION_KEY) {
+		sessionSlot(key).s = state;
 	},
-	getSharedSession() {
-		return sharedSession;
+	getSharedSession(key: string = DEFAULT_SESSION_KEY) {
+		return sessions.get(key) ?? null;
 	},
 	syncSharedSession,
 };
@@ -665,10 +734,8 @@ function mapToolArgs(
 		const piKey = renames?.[key] ?? key;
 		if (!(piKey in result)) result[piKey] = value; // first alias wins
 	}
-	// Pi bash has no default timeout; add a safety default
-	if (toolName.toLowerCase() === "bash" && result.timeout == null) {
-		result.timeout = 120;
-	}
+	// No injected bash timeout: OMP 18's bash applies its own default, and a value
+	// written into the stored args made every rebuilt session miss the prompt cache.
 	return result;
 }
 
@@ -783,13 +850,6 @@ function logServedContextWindow(label: string, message: SDKMessage, model: Model
 		debug(`${label}: served contextWindow=${v.contextWindow ?? "?"} maxOutputTokens=${v.maxOutputTokens ?? "?"} servedModel=${k} registered=${model.contextWindow}`);
 	}
 }
-
-// --- Effort level mapping ---
-// OMP reasoning levels → CC SDK effort levels
-
-const REASONING_TO_EFFORT: Record<string, EffortLevel> = {
-	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max",
-};
 
 // --- Provider helpers: misc ---
 
@@ -1037,11 +1097,38 @@ async function consumeQuery(
 	model: Model<any>,
 	wasAborted: () => boolean,
 	queryCtx: QueryContext,
+	onExtraUsage: () => void,
 ): Promise<{ capturedSessionId?: string }> {
 	let capturedSessionId: string | undefined;
 
 	for await (const message of sdkQuery) {
-		if (wasAborted()) break;
+		if (wasAborted() || queryCtx.extraUsageBlocked) break;
+
+		// Handled whether or not an OMP stream is open: after a tool call the stream is
+		// closed, and a failure or rate limit arriving then must still be recorded.
+		if (message.type === "system") {
+			if ((message as any).subtype === "init" && (message as any).session_id) {
+				capturedSessionId = (message as any).session_id;
+			}
+			continue;
+		}
+		if (message.type === "rate_limit_event") {
+			const billedAsExtraUsage = reportRateLimit((message as any).rate_limit_info);
+			if (billedAsExtraUsage && !providerSettings.allowExtraUsage) {
+				queryCtx.extraUsageBlocked = true;
+				onExtraUsage();
+				break;
+			}
+			continue;
+		}
+		if (message.type === "result") {
+			logServedContextWindow("result", message, model);
+			if (isErrorResult(message)) {
+				queryCtx.resultError = explainClaudeError(resultErrorText(message));
+				debug(`consumeQuery: error result: ${queryCtx.resultError}`);
+				continue;
+			}
+		}
 		if (!queryCtx.currentPiStream || !queryCtx.turnOutput) continue;
 
 		switch (message.type) {
@@ -1052,10 +1139,9 @@ async function consumeQuery(
 				processAssistantMessage(message, model, customToolNameToPi, queryCtx);
 				break;
 			case "result":
-				logServedContextWindow("result", message, model);
-				if (!queryCtx.turnSawStreamEvent && message.subtype === "success") {
+				if (!queryCtx.turnSawStreamEvent) {
 					ensureTurnStarted(queryCtx);
-					const text = message.result || "";
+					const text = (message as any).result || "";
 					queryCtx.turnBlocks.push({ type: "text", text });
 					const idx = queryCtx.turnBlocks.length - 1;
 					queryCtx.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: queryCtx.turnOutput });
@@ -1063,39 +1149,39 @@ async function consumeQuery(
 					queryCtx.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: queryCtx.turnOutput });
 				}
 				break;
-			case "system":
-				if ((message as any).subtype === "init" && (message as any).session_id) {
-					capturedSessionId = (message as any).session_id;
-				}
-				break;
 			case "user":
 				break; // SDK echo of user prompt — not needed
-			case "rate_limit_event": {
-				const info = (message as any).rate_limit_info;
-				debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
-				const notice = rateLimitNotice(info);
-				if (notice) piUI?.notify(notice.message, notice.level);
-				break;
-			}
 			default:
 				debug("consumeQuery: unhandled SDK message type", message.type);
 				break;
 		}
 	}
 
-	// DEBUG: trace when consumeQuery exits
-	debug(`consumeQuery: for-await loop exited, wasAborted=${wasAborted()}, capturedSessionId=${capturedSessionId?.slice(0, 8) ?? "none"}`);
-
+	debug(`consumeQuery: loop exited, wasAborted=${wasAborted()}, extraUsageBlocked=${queryCtx.extraUsageBlocked}, capturedSessionId=${capturedSessionId?.slice(0, 8) ?? "none"}`);
 	return { capturedSessionId };
 }
+
+const EXTRA_USAGE_STOP_MESSAGE =
+	"Stopped: your Claude plan limit is reached and this request was billed to Extra Usage. " +
+	"The bridge stops here so nothing more is charged. Wait for the limit to reset, or set " +
+	'"provider.allowExtraUsage": true in claude-bridge.json to continue on Extra Usage.';
 
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. */
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+	// Compaction, titles, recaps and other side calls never touch a session mirror.
+	if (isOneShotCall(context)) return oneShotStream(model, context, options);
+
+	const sessionKey = (options as { sessionId?: string } | undefined)?.sessionId ?? DEFAULT_SESSION_KEY;
+	const slot = sessionSlot(sessionKey);
+	// Side requests (OMP sets parentSessionId) get their own short-lived mirror,
+	// dropped when they finish so their session files don't pile up.
+	const ephemeral = Boolean((options as { parentSessionId?: string } | undefined)?.parentSessionId);
 	const stream = newAssistantMessageEventStream();
 
-	// DEBUG: trace followUp message triggering
-	const lastMsgRole = context.messages[context.messages.length - 1]?.role;
+	// OMP 18 starts some runs with a "developer" message (auto-continue); it is a prompt like a user message.
+	const lastRole = context.messages[context.messages.length - 1]?.role;
+	const lastMsgRole = lastRole === "developer" ? "user" : lastRole;
 	debug(`provider: streamClaudeAgentSdk called, activeQuery=${!!ctx().activeQuery}, lastMsgRole=${lastMsgRole}, isReentrant=${ctx().activeQuery !== null}`);
 
 	const activeQuery = ctx().activeQuery !== null;
@@ -1152,27 +1238,34 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			}
 		}
 
-		if (sharedSession) sharedSession.cursor = context.messages.length;
+		if (slot.s) slot.s.cursor = context.messages.length;
 		resultCtx.latestCursor = Math.max(resultCtx.latestCursor, context.messages.length);
 		return stream;
 	}
 
-	// --- Orphaned tool result (e.g. user aborted a tool call) ---
-	// The query is gone but pi still delivered the result. Nothing to do — just
-	// emit end_turn so pi waits for the next real user message.
+	// --- Orphaned tool result (e.g. user aborted a tool call, or the query failed) ---
+	// The query is gone but OMP still delivered the result. Deliver a failure parked
+	// while the tool ran; otherwise end the turn so OMP waits for the next prompt.
+	// Uses its own output object: resetting ctx() here would wipe a live query's turn.
 	const lastMsg = context.messages[context.messages.length - 1];
 	if (lastMsg?.role === "toolResult") {
-		debug(`provider: orphaned tool result after abort, emitting end_turn`);
-		if (sharedSession) sharedSession.cursor = context.messages.length;
-		const c = ctx();  // capture current context for the microtask
+		const parked = pendingTurnErrors.get(sessionKey);
+		pendingTurnErrors.delete(sessionKey);
+		debug(`provider: orphaned tool result, ${parked ? "delivering parked error" : "emitting end_turn"}`);
+		if (slot.s) slot.s.cursor = context.messages.length;
 		queueMicrotask(() => {
-			c.resetTurnState(model);
-			stream.push({ type: "done", reason: "stop", message: c.turnOutput });
+			if (parked) {
+				stream.push({ type: "error", reason: "error", error: newAssistantOutput(model, "", "error", parked) });
+				piUI?.notify(parked.split("\n")[0], "error");
+			} else {
+				stream.push({ type: "done", reason: "stop", message: newAssistantOutput(model, "", "stop") });
+			}
 			markStreamComplete(stream);
 			stream.end();
 		});
 		return stream;
 	}
+	pendingTurnErrors.delete(sessionKey);
 
 	// --- Fresh query ---
 
@@ -1193,7 +1286,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, model.id);
+	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModelFor(model), sessionKey);
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
@@ -1207,7 +1300,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			isReentrant,
 			activeQueryContexts: activeQueryContexts.size,
 			activeQueryExists: queryCtx.activeQuery !== null,
-			sharedSession: sharedSession ? { sessionId: sharedSession.sessionId.slice(0, 8), cursor: sharedSession.cursor } : null,
+			sessionKey,
+			sharedSession: slot.s ? { sessionId: slot.s.sessionId.slice(0, 8), cursor: slot.s.cursor } : null,
 			messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
 		});
 		// Recover: use a continuation prompt so the SDK doesn't send an empty text block
@@ -1218,74 +1312,54 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		? wrapPromptStream(promptBlocks)
 		: promptText;
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
-	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
-	const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
-	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(systemPromptText(context.systemPrompt)) : undefined;
-	const appendParts = [agentsAppend, skillsAppend].filter((part): part is string => Boolean(part));
-	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+	// OMP's persona, skills/rules, project context and append text, verbatim.
+	const systemPromptAppend = composeAppend(extractOmpPromptParts(context.systemPrompt), forwardSettings(providerSettings.forward));
 
-	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
-	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
-	// token overhead. --strict-mcp-config tells the binary to use ONLY mcpServers passed
-	// programmatically and ignore filesystem MCP entries — applied unconditionally because
-	// settingSources=undefined does NOT give isolation (the CC default loads all sources).
-	const settingSources: SettingSource[] | undefined = appendSystemPrompt
-		? undefined
-		: providerSettings.settingSources ?? ["user", "project"];
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
+	const thinking = planThinking(model as any, options ?? {});
 
-	// Prefer the model's own thinkingLevelMap when present (pi-ai 0.72+ ships
-	// per-model overrides — e.g. opus-4-7 wants xhigh→xhigh, not xhigh→max).
-	// Fall back to our generic table for older pi-ai or unmapped levels.
-	const effort = options?.reasoning
-		? ((model as any).thinkingLevelMap?.[options.reasoning] as EffortLevel | undefined)
-			?? REASONING_TO_EFFORT[options.reasoning]
-		: undefined;
-
-	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
-	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
-	const cliModel = claudeCodeModelId(model, longContextSettings);
+	// cliModel is the id sent to Claude Code (may carry [1m]); model.id is OMP's picker id.
+	const cliModel = cliModelFor(model);
 	const extraArgs: Record<string, string | null> = { model: cliModel };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
-	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
-	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
-	if (effort) extraArgs["thinking-display"] = "summarized";
+	// Opus 4.7+ default thinking.display to "omitted" (empty thinking text in the stream).
+	if (thinking.display) extraArgs["thinking-display"] = thinking.display;
 
-	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth
-	// when the user is logged into Anthropic). These are a separate code path from
-	// filesystem MCP and are NOT blocked by --strict-mcp-config or settingSources=undefined.
-	// The native CC binary gates them on env var ENABLE_CLAUDEAI_MCP_SERVERS: setting it
-	// to "0"/"false"/"no"/"off" makes the loader return early before any cloud fetch.
-	// DISABLE_AUTO_COMPACT=1: pi owns context-management and propagates its own
-	// /compact via session_compact (see handler in default export). Letting CC
-	// also autocompact would double-flush the prompt cache and races pi's
-	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
-	// Manual /compact in CC still works (we never invoke it).
-	const childEnv = { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" };
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
-		env: childEnv,
+		env: childEnv(),
+		// Claude Code's built-in tools are off: OMP executes every tool, served over MCP.
 		tools: [],
-		permissionMode: "bypassPermissions",
+		// Least privilege: only OMP's MCP tools are allowed, everything else is denied
+		// without a prompt. OMP applies its own approvals when it runs the tool.
+		permissionMode: "dontAsk",
+		allowedTools: [`mcp__${MCP_SERVER_NAME}`],
 		includePartialMessages: true,
+		// User settings only: a repository's .claude/settings*.json can carry hooks, env
+		// and apiKeyHelper, and non-interactive Claude Code trusts the workspace, so they
+		// would run with no prompt. ~/.claude/settings.json keeps env/apiKeyHelper.
+		settingSources: ["user"] as SettingSource[],
+		settings: claudeSettings(),
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
-			append: systemPromptAppend ? systemPromptAppend : undefined,
+			append: systemPromptAppend,
 		},
 		extraArgs,
-		...(effort ? { effort } : {}),
-		...(settingSources ? { settingSources } : {}),
+		...thinkingOptions(thinking),
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
+		...(!resumeSessionId && syncResult.freshSessionId ? { sessionId: syncResult.freshSessionId } : {}),
 		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 		...makeCliDebugOptions("provider"),
 	};
+	// A clean start under the stable id replaces whatever an earlier OMP process left there.
+	if (!resumeSessionId && syncResult.freshSessionId) deleteSession(syncResult.freshSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
 
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
-		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${effort ?? "default"}`,
-		`appendSys=${appendSystemPrompt} strictMcp=${strictMcpConfigEnabled}`,
+		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${thinking.effort ?? (thinking.disabled ? "off" : "default")}`,
+		`append=${systemPromptAppend?.length ?? 0}ch strictMcp=${strictMcpConfigEnabled} session=${sessionKey}${ephemeral ? " (side)" : ""}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
 	// 3. Start SDK query and claim it for this context
@@ -1317,16 +1391,24 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		else options.signal.addEventListener("abort", onAbort, { once: true });
 	}
 
+	const stopForExtraUsage = () => {
+		debug("provider: request billed to Extra Usage; stopping query (allowExtraUsage=false)");
+		for (const pending of queryCtx.pendingToolCalls.values()) { pending.resolve({ content: [{ type: "text", text: "Stopped: Extra Usage" }], isError: true }); }
+		queryCtx.pendingToolCalls.clear();
+		queryCtx.pendingResults.clear();
+		requestAbort();
+	};
+
 	// Background consumer — runs until query ends
-	consumeQuery(sdkQuery, customToolNameToPi, model, () => wasAborted, queryCtx)
+	consumeQuery(sdkQuery, customToolNameToPi, model, () => wasAborted, queryCtx, stopForExtraUsage)
 		.then(async ({ capturedSessionId }) => {
 			debug(`provider: consumeQuery completed, stopReason=${queryCtx.turnOutput?.stopReason}, error=${queryCtx.turnOutput?.errorMessage}, aborted=${wasAborted}`);
 
 			// --- Abort detection in normal completion path ---
 			if (wasAborted || options?.signal?.aborted) {
-				if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
+				if (slot.s) slot.s = { ...slot.s, needsRebuild: true, forceRotate: true };
 				queryCtx.deferredUserMessages = [];
-				debug(`provider: abort detected, marked sharedSession needsRebuild + forceRotate`);
+				debug(`provider: abort detected, marked slot.s needsRebuild + forceRotate`);
 				if (queryCtx.turnOutput) {
 					queryCtx.turnOutput.stopReason = "aborted";
 					queryCtx.turnOutput.errorMessage = "Operation aborted";
@@ -1339,18 +1421,30 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				return;
 			}
 
+			// --- Failed result or Extra Usage stop: end the turn as an error ---
+			if (queryCtx.extraUsageBlocked || queryCtx.resultError) {
+				const msg = queryCtx.extraUsageBlocked ? EXTRA_USAGE_STOP_MESSAGE : queryCtx.resultError!;
+				// The CC process was cut off mid-turn (or errored): its JSONL is not a
+				// trustworthy continuation, so the next turn rebuilds from OMP's history.
+				if (slot.s) slot.s = { ...slot.s, needsRebuild: true, forceRotate: queryCtx.extraUsageBlocked };
+				queryCtx.deferredUserMessages = [];
+				if (queryCtx.activeQuery === sdkQuery) queryCtx.activeQuery = null;
+				failTurn(queryCtx, sessionKey, msg);
+				return;
+			}
+
 			// --- Capture session ID ---
-			const sessionId = capturedSessionId ?? sharedSession?.sessionId;
+			const sessionId = capturedSessionId ?? slot.s?.sessionId;
 			if (syncResult.preserveSharedSession) {
-				if (capturedSessionId && capturedSessionId !== sharedSession?.sessionId) {
+				if (capturedSessionId && capturedSessionId !== slot.s?.sessionId) {
 					deleteSession(capturedSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
 					debug(`provider: query done, deleted ephemeral session ${capturedSessionId.slice(0, 8)} to preserve shared session`);
 				}
 				debug(`provider: query done, ignoring captured session ${capturedSessionId?.slice(0, 8) ?? "none"} to preserve shared session`);
 			} else if (sessionId) {
-				const cursor = Math.max(context.messages.length, queryCtx.latestCursor, sharedSession?.cursor ?? 0);
+				const cursor = Math.max(context.messages.length, queryCtx.latestCursor, slot.s?.cursor ?? 0);
 				debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
-				sharedSession = { sessionId, cursor, cwd };
+				slot.s = { sessionId, cursor, cwd };
 			}
 
 			// --- Replay deferred user messages as continuation queries ---
@@ -1360,23 +1454,25 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 					debug(`provider: replaying deferred user message: ${steerPrompt.slice(0, 60)}`);
 					queryCtx.resetTurnState(model);
 
-					const resumeId = sharedSession?.sessionId;
+					const resumeId = slot.s?.sessionId;
 					if (!resumeId) {
 						debug(`WARNING: no session to resume for deferred message, dropping`);
 						break;
 					}
 
-					const contOptions = { ...queryOptions, resume: resumeId, ...makeCliDebugOptions("continuation") };
+					// --session-id can't accompany --resume.
+					const { sessionId: _freshId, ...baseOptions } = queryOptions;
+					const contOptions = { ...baseOptions, resume: resumeId, ...makeCliDebugOptions("continuation") };
 					const contQuery = query({ prompt: steerPrompt, options: contOptions });
 					queryCtx.activeQuery = contQuery;
 
 					debug(`provider: continuation query, model=${cliModel}, resume=${resumeId.slice(0, 8)}, prompt=${steerPrompt.slice(0, 60)}`);
 
 					try {
-						const { capturedSessionId: contSid } = await consumeQuery(contQuery, customToolNameToPi, model, () => wasAborted, queryCtx);
-						const sid = contSid ?? sharedSession?.sessionId;
+						const { capturedSessionId: contSid } = await consumeQuery(contQuery, customToolNameToPi, model, () => wasAborted, queryCtx, () => { try { contQuery.close(); } catch {} });
+						const sid = contSid ?? slot.s?.sessionId;
 						if (sid) {
-							sharedSession = { sessionId: sid, cursor: sharedSession?.cursor ?? 0, cwd };
+							slot.s = { sessionId: sid, cursor: slot.s?.cursor ?? 0, cwd };
 						}
 					} catch (contError) {
 						debug(`provider: continuation query error:`, contError);
@@ -1397,16 +1493,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		})
 		.catch((error) => {
 			debug(`provider: query error, model=${cliModel}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
-			if ((wasAborted || options?.signal?.aborted) && sharedSession) {
-				sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
+			const aborted = wasAborted || Boolean(options?.signal?.aborted);
+			if ((aborted || queryCtx.extraUsageBlocked) && slot.s) {
+				slot.s = { ...slot.s, needsRebuild: true, forceRotate: true };
 			} else {
-				sharedSession = null;
+				slot.s = null;
 			}
 			queryCtx.deferredUserMessages = [];
-			if (queryCtx.turnOutput) {
-				queryCtx.turnOutput.stopReason = options?.signal?.aborted ? "aborted" : "error";
-				queryCtx.turnOutput.errorMessage = error instanceof Error ? error.message : String(error);
-			}
 			if (!isReentrant && queryCtx.activeQuery === sdkQuery) {
 				for (const pending of queryCtx.pendingToolCalls.values()) { pending.resolve({ content: [{ type: "text", text: "Query ended" }] }); }
 				queryCtx.pendingToolCalls.clear();
@@ -1414,11 +1507,22 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				debug("provider: clearing activeQuery before error stream completion");
 				queryCtx.activeQuery = null;
 			}
-			const stream = queryCtx.currentPiStream;
-			stream?.push({ type: "error", reason: (queryCtx.turnOutput?.stopReason ?? "error") as "aborted" | "error", error: queryCtx.turnOutput! });
-			markStreamComplete(stream);
-			stream?.end();
-			queryCtx.currentPiStream = null;
+			if (aborted && !queryCtx.extraUsageBlocked) {
+				if (queryCtx.turnOutput) {
+					queryCtx.turnOutput.stopReason = "aborted";
+					queryCtx.turnOutput.errorMessage = error instanceof Error ? error.message : String(error);
+				}
+				const stream = queryCtx.currentPiStream;
+				stream?.push({ type: "error", reason: "aborted", error: queryCtx.turnOutput! });
+				markStreamComplete(stream);
+				stream?.end();
+				queryCtx.currentPiStream = null;
+				return;
+			}
+			const msg = queryCtx.extraUsageBlocked
+				? EXTRA_USAGE_STOP_MESSAGE
+				: explainClaudeError(queryCtx.resultError ?? errorMessage(error));
+			failTurn(queryCtx, sessionKey, msg);
 		})
 		.finally(() => {
 			if (options?.signal) options.signal.removeEventListener("abort", onAbort);
@@ -1431,21 +1535,50 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			}
 			activeQueryContexts.delete(queryCtx);
 			sdkQuery.close();
+			if (ephemeral && slot.s) {
+				deleteSession(slot.s.sessionId, slot.s.cwd, process.env.CLAUDE_CONFIG_DIR);
+				debug(`provider: dropped side-request mirror ${slot.s.sessionId.slice(0, 8)} (${sessionKey})`);
+				slot.s = null;
+			}
 		});
 
 	return stream;
+}
+
+// Errors that arrive while OMP is executing a tool have no open stream; they are
+// parked per OMP session and delivered on OMP's next call (the tool-result call).
+const pendingTurnErrors = new Map<string, string>();
+
+function failTurn(queryCtx: QueryContext, sessionKey: string, msg: string): void {
+	if (queryCtx.turnOutput) {
+		queryCtx.turnOutput.stopReason = "error";
+		queryCtx.turnOutput.errorMessage = msg;
+	}
+	const stream = queryCtx.currentPiStream;
+	if (!stream) {
+		pendingTurnErrors.set(sessionKey, msg);
+		debug(`provider: no open stream; parked error for next call: ${msg.slice(0, 120)}`);
+		return;
+	}
+	if (!queryCtx.turnStarted) ensureTurnStarted(queryCtx);
+	stream.push({ type: "error", reason: "error", error: queryCtx.turnOutput! });
+	markStreamComplete(stream);
+	stream.end();
+	queryCtx.currentPiStream = null;
+	piUI?.notify(msg.split("\n")[0], "error");
 }
 
 // --- AskClaude: prompt and wait ---
 
 async function promptAndWait(
 	prompt: string,
-	mode: "full" | "read" | "none",
+	mode: AskClaudeMode,
 	toolCalls: Map<string, ToolCallState>,
-	signal?: AbortSignal,
-	options?: {
-		systemPrompt?: string;
-		appendSkills?: boolean;
+	signal: AbortSignal | undefined,
+	options: {
+		cwd: string;
+		systemPrompt?: string[];
+		forward?: ForwardSettings;
 		onStreamUpdate?: (responseText: string) => void;
 		model?: string;
 		thinking?: string;
@@ -1453,75 +1586,57 @@ async function promptAndWait(
 		context?: Context["messages"];
 	},
 ): Promise<{ responseText: string; stopReason: string }> {
-	const cwd = process.cwd();
-	const requestedModel = options?.model ?? "opus";
+	const cwd = options.cwd;
+	const requestedModel = options.model ?? "opus";
 	const model = resolveModel(requestedModel);
 	const modelId = model?.id ?? requestedModel;
-	const cliModel = model ? claudeCodeModelId(model, longContextSettings) : modelId;
+	const cliModel = model ? cliModelFor(model) : modelId;
 
-	// Session resume for shared mode — reuse provider's session if it exists,
-	// otherwise create one from pi's context.
-	// Note: doesn't update sharedSession.cursor after completion, so the next
-	// provider call will see missed messages and trigger a Case 4 rebuild.
+	// Shared mode: give Claude OMP's current history. Synced into a mirror of its own
+	// (never the provider's: AskClaude only runs when another provider is active, so
+	// a provider mirror would be stale), then forked so the run doesn't alter it.
 	let resumeSessionId: string | null = null;
-	if (!options?.isolated && options?.context?.length) {
-		if (sharedSession) {
-			// Provider already has a session — just resume from it
-			// Any missed messages from other providers were already handled by the provider's Case 4
-			resumeSessionId = sharedSession.sessionId;
-		} else {
-			// No provider session yet — create one from pi's context
-			const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
-			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, modelId);
-			resumeSessionId = sync.sessionId;
-		}
+	if (!options.isolated && options.context?.length) {
+		const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
+		resumeSessionId = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, cliModel, ASKCLAUDE_SESSION_KEY).sessionId;
 	}
 
-	// Mode → disallowed tools
-	const disallowedTools = MODE_DISALLOWED_TOOLS[mode] ?? [];
-
-	// Skills append
-	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
-		? extractSkillsBlock(options.systemPrompt) : undefined;
-
-	// Effort
-	const effort = options?.thinking && options.thinking !== "off"
-		? REASONING_TO_EFFORT[options.thinking] : undefined;
-
+	const policy = askClaudeToolPolicy(mode);
+	const append = composeAppend(extractOmpPromptParts(options.systemPrompt), { personality: false, ...options.forward });
+	const thinking = planThinking((model ?? {}) as any, { reasoning: options.thinking });
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
-
-	const extraArgs: Record<string, string | null> = {
-		"strict-mcp-config": null,
-		model: cliModel,
-	};
-	if (effort) extraArgs["thinking-display"] = "summarized";
+	const extraArgs: Record<string, string | null> = { "strict-mcp-config": null, model: cliModel };
+	if (thinking.display) extraArgs["thinking-display"] = thinking.display;
 
 	debug("askClaude:",
-		`mode=${mode} model=${modelId} cliModel=${cliModel} effort=${effort ?? "default"}`,
-		`isolated=${options?.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
-		`skills=${Boolean(skillsBlock)} promptLen=${prompt.length}`);
+		`mode=${mode} model=${modelId} cliModel=${cliModel} effort=${thinking.effort ?? (thinking.disabled ? "off" : "default")}`,
+		`isolated=${options.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
+		`append=${append?.length ?? 0}ch promptLen=${prompt.length}`);
 
 	const sdkQuery = query({
 		prompt,
 		options: {
 			cwd,
-			env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
-			permissionMode: "bypassPermissions",
-			...(disallowedTools.length ? { disallowedTools } : {}),
-			...(effort ? { effort } : {}),
-			systemPrompt: skillsBlock
-				? { type: "preset", preset: "claude_code", append: skillsBlock }
-				: undefined,
-			settingSources: ["user", "project"] as SettingSource[],
+			env: childEnv(),
+			tools: policy.tools,
+			permissionMode: policy.permissionMode,
+			...(policy.permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
+			...(policy.allowedTools ? { allowedTools: policy.allowedTools } : {}),
+			...(policy.disallowedTools ? { disallowedTools: policy.disallowedTools } : {}),
+			includePartialMessages: true,
+			// Claude Code's own tools run here, so its git guidance stays on.
+			settingSources: ["user"] as SettingSource[],
+			settings: claudeSettings({ gitInstructions: true }),
+			systemPrompt: { type: "preset", preset: "claude_code", append },
 			extraArgs,
-			...(resumeSessionId ? { resume: resumeSessionId } : {}),
-			...(options?.isolated ? { persistSession: false } : {}),
+			...thinkingOptions(thinking),
+			...(resumeSessionId ? { resume: resumeSessionId, forkSession: true } : {}),
+			...(options.isolated ? { persistSession: false } : {}),
 			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 			...makeCliDebugOptions("askclaude"),
 		},
 	});
 
-	// Abort handling
 	let wasAborted = false;
 	const onAbort = () => {
 		wasAborted = true;
@@ -1534,6 +1649,8 @@ async function promptAndWait(
 	let sdkMessageCount = 0;
 	let textDeltaCount = 0;
 	let resultSubtype: string | undefined;
+	let failure: string | undefined;
+	let forkedSessionId: string | undefined;
 
 	try {
 		for await (const message of sdkQuery) {
@@ -1541,34 +1658,33 @@ async function promptAndWait(
 			sdkMessageCount++;
 
 			switch (message.type) {
+				case "system":
+					if ((message as any).subtype === "init") forkedSessionId = (message as any).session_id;
+					break;
 				case "stream_event": {
 					const event = (message as SDKMessage & { event: any }).event;
-					// Text deltas → accumulate and stream
 					if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
 						responseText += event.delta.text;
 						textDeltaCount++;
-						options?.onStreamUpdate?.(responseText);
+						options.onStreamUpdate?.(responseText);
 					}
-					// Tool call start → track for action summary progress
 					if (event?.type === "content_block_start" && event.content_block?.type === "tool_use") {
-						debug(`askClaude: tool_use start: ${event.content_block.name}`);
-						toolCalls.set(event.content_block.id, {
-							name: mapToolName(event.content_block.name),
-							status: "running",
-						});
+						toolCalls.set(event.content_block.id, { name: mapToolName(event.content_block.name), status: "running" });
 					}
 					break;
 				}
 				case "assistant": {
-					// Update tool calls with full input for action summary
 					for (const block of (message as any).message?.content ?? []) {
 						if (block.type === "tool_use") {
-							toolCalls.set(block.id, {
-								name: mapToolName(block.name),
-								status: "complete",
-								rawInput: block.input,
-							});
+							toolCalls.set(block.id, { name: mapToolName(block.name), status: "complete", rawInput: block.input });
 						}
+					}
+					break;
+				}
+				case "rate_limit_event": {
+					if (reportRateLimit((message as any).rate_limit_info) && !providerSettings.allowExtraUsage) {
+						failure = EXTRA_USAGE_STOP_MESSAGE;
+						onAbort();
 					}
 					break;
 				}
@@ -1578,24 +1694,30 @@ async function promptAndWait(
 					if (r.usage) {
 						debug(`askClaude: result usage: in=${r.usage.input_tokens} out=${r.usage.output_tokens} cacheRead=${r.usage.cache_read_input_tokens ?? 0} cacheWrite=${r.usage.cache_creation_input_tokens ?? 0} turns=${r.num_turns ?? "?"}`);
 					}
-					if (!responseText && message.subtype === "success" && message.result) {
-						responseText = message.result;
-					}
+					if (isErrorResult(message)) failure ??= explainClaudeError(resultErrorText(message));
+					else if (!responseText && r.result) responseText = r.result;
 					break;
 				}
 			}
 		}
 
-		const stopReason = wasAborted ? "cancelled" : "stop";
-		debug(`askClaude: done`,
-			`stopReason=${stopReason} resultSubtype=${resultSubtype ?? "none"}`,
-			`sdkMessages=${sdkMessageCount} textDeltas=${textDeltaCount} responseLen=${responseText.length}`,
-			`toolCalls=${toolCalls.size}`);
-		return { responseText, stopReason };
+		debug(`askClaude: done resultSubtype=${resultSubtype ?? "none"} sdkMessages=${sdkMessageCount} textDeltas=${textDeltaCount} responseLen=${responseText.length} toolCalls=${toolCalls.size}`);
+		if (failure) throw new Error(failure);
+		return { responseText, stopReason: wasAborted ? "cancelled" : "stop" };
 	} finally {
 		signal?.removeEventListener("abort", onAbort);
 		sdkQuery.close();
+		// The fork is a throwaway copy of the mirror; don't leave it on disk.
+		if (resumeSessionId && forkedSessionId && forkedSessionId !== resumeSessionId) {
+			deleteSession(forkedSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+		}
 	}
+}
+
+const ASKCLAUDE_SESSION_KEY = "askclaude";
+
+function forwardSettings(forward: ForwardSettings | undefined): ForwardSettings {
+	return { personality: true, skills: true, projectContext: true, appendText: true, ...forward };
 }
 
 // --- Extension registration ---
@@ -1609,35 +1731,27 @@ const PREVIEW_MAX_LINES = 6;
 let askClaudeToolName = "AskClaude";
 
 export default function (pi: ExtensionAPI) {
-	// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
-	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
-
 	const config = loadConfig(process.cwd());
-	debug("loadConfig:", JSON.stringify(config));
+	debug(`load: ${CLIENT_APP} module=${moduleInstanceId} config=${JSON.stringify(config)}`);
 	providerSettings = config.provider ?? {};
-	const contextWindowSetting = providerSettings.contextWindow;
-	const contextWindow: ContextWindowMode =
-		contextWindowSetting === "auto" || contextWindowSetting === "1m" || contextWindowSetting === "200k"
-			? contextWindowSetting
-			: "auto";
-	if (contextWindowSetting != null && contextWindow !== contextWindowSetting) {
-		console.error(`claude-bridge: invalid provider.contextWindow "${String(contextWindowSetting)}", using auto`);
-	}
 	longContextSettings = {
 		plan: providerSettings.plan ?? "pro",
 		longContextExtraUsage: providerSettings.longContextExtraUsage ?? false,
-		contextWindow,
+		contextWindow: providerSettings.contextWindow ?? "auto",
+		forceTwoHundredK: providerSettings.forceTwoHundredK,
 	};
+	MODELS = buildModels(getModels("anthropic"), providerSettings.excludeModels);
 	const registeredModels = buildVariantModels(MODELS, longContextSettings);
 
-	// Reset shared session on pi session lifecycle events
-	const clearSession = (event: string) => {
-		debug(`${event}: clearing session ${sharedSession?.sessionId?.slice(0, 8) ?? "none"}`);
-		sharedSession = null;
+	// OMP session lifecycle: drop every mirror this instance holds. Subagent sessions
+	// that route through this instance simply rebuild on their next turn.
+	const clearSessions = (event: string) => {
+		debug(`${event}: clearing ${sessions.size} session mirror(s)`);
+		sessions.clear();
+		pendingTurnErrors.clear();
 
-		// Clear the global streamSimple if this instance registered it.
-		// This allows /reload to work — the old instance clears the flag so
-		// the new instance can register fresh without wrapping stale state.
+		// Clear the global streamSimple if this instance registered it, so /reload
+		// can register fresh instead of wrapping stale state.
 		const g = globalThis as Record<symbol, any>;
 		if (g[ACTIVE_STREAM_SIMPLE_KEY] === streamClaudeAgentSdk) {
 			debug(`${event}: clearing ACTIVE_STREAM_SIMPLE_KEY`);
@@ -1646,52 +1760,29 @@ export default function (pi: ExtensionAPI) {
 	};
 	pi.on("session_start", (_event, ctx) => {
 		piUI = ctx.ui;
-		clearSession("session_start");
+		clearSessions("session_start");
 	});
-	pi.on("session_switch", (event) => clearSession(`session_switch:${event.reason}`));
-	pi.on("session_branch", () => clearSession("session_branch"));
-	pi.on("session_shutdown", () => clearSession("session_shutdown"));
-
-	pi.on("session_before_compact", async (event, ctx) => {
-		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
-		debug(
-			`session_before_compact: takeover isSplitTurn=${event.preparation.isSplitTurn} ` +
-			`messages=${event.preparation.messagesToSummarize.length} turnPrefix=${event.preparation.turnPrefixMessages.length}`,
-		);
-		try {
-			reinjectPriorCompactionFileOps(event.branchEntries, event.preparation);
-			const compaction = await compact(
-				event.preparation,
-				ctx.model,
-				undefined,
-				event.customInstructions,
-				event.signal,
-				{ completeImpl: isolatedCompleteImpl },
-			);
-			debug(`session_before_compact: takeover complete summaryLen=${compaction.summary.length}`);
-			return { compaction };
-		} catch (err) {
-			const msg = errorMessage(err);
-			debug("session_before_compact: takeover failed; cancelling to avoid native compact fallback", err);
-			ctx.ui?.notify?.(
-				`Claude bridge compact failed (${msg}); cancelled to avoid known hang. Retry, switch model, or reduce context.`,
-				"error",
-			);
-			return { cancel: true };
+	pi.on("session_switch", (event) => clearSessions(`session_switch:${event.reason}`));
+	pi.on("session_branch", () => clearSessions("session_branch"));
+	pi.on("session_shutdown", () => {
+		// A query parked on a tool call would otherwise keep its Claude Code process
+		// (and OMP's event loop) alive after OMP exits.
+		for (const queryCtx of activeQueryContexts) {
+			for (const pending of queryCtx.pendingToolCalls.values()) pending.resolve({ content: [{ type: "text", text: "Session ended" }] });
+			try { (queryCtx.activeQuery as { close?: () => void } | null)?.close?.(); } catch { /* ignore */ }
 		}
+		activeQueryContexts.clear();
+		clearSessions("session_shutdown");
 	});
 
-	// pi /compact and session-tree navigation (rewind / fork-at-point /
-	// branch switch) both mutate pi's messages array out from under the
-	// bridge. syncSharedSession's REUSE check would otherwise see
-	// slice(cursor) === [] (or skip entries) and keep --resume'ing a CC
-	// session that no longer matches pi's history. /compact in particular
-	// triggers CC's autocompact-thrashing guard (issue #8). Force the next
-	// call down the REBUILD path so CC sees the current history.
+	// /compact and session-tree navigation rewrite OMP's history under the bridge;
+	// force the next call down the REBUILD path so Claude Code sees the new history.
+	// (Compaction itself needs no takeover: OMP's summary call is tool-less and runs
+	// through the isolated one-shot path.)
 	const markRebuild = (event: string) => {
-		if (sharedSession) {
-			debug(`${event}: marking needsRebuild on session ${sharedSession.sessionId.slice(0, 8)}`);
-			sharedSession = { ...sharedSession, needsRebuild: true };
+		for (const [key, state] of sessions) {
+			debug(`${event}: marking needsRebuild on ${key} (${state.sessionId.slice(0, 8)})`);
+			sessions.set(key, { ...state, needsRebuild: true });
 		}
 	};
 	pi.on("session_compact", (event) => markRebuild(`session_compact:fromExtension=${event.fromExtension}`));
@@ -1759,14 +1850,15 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	let modeDesc = `"read" (default): questions about the codebase — review, analysis, explain. "none": general knowledge only (no file access).`;
-	if (allowFull) modeDesc += ` "full": allows writing and bash execution (careful: runs without feedback to pi).`;
+	if (allowFull) modeDesc += ` "full": allows writing and bash execution (careful: runs without feedback to OMP).`;
+	const defaultModel = askConf?.defaultModel ?? "opus";
 
 	if (askConf?.enabled !== false) {
 		const askClaudeParams = Type.Object({
 			prompt: Type.String({ description: "The question or task for Claude Code. By default Claude sees the full conversation history. Don't research up front, let Claude explore." }),
 			mode: Type.Optional(StringEnum(modeValues, { description: modeDesc })),
-			model: Type.Optional(Type.String({ description: 'Claude model (e.g. "opus", "sonnet", "haiku", or full ID). Defaults to "opus".' })),
-			thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh"] as const, { description: "Thinking effort level. Omit to use Claude Code's default." })),
+			model: Type.Optional(Type.String({ description: `Claude model ("opus", "sonnet", "haiku", "fable" pick the newest of that family, or a full id). Defaults to "${defaultModel}".` })),
+			thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, { description: "Thinking effort level. Omit to use Claude Code's default." })),
 			isolated: Type.Optional(Type.Boolean({ description: "When true, Claude sees only this prompt (clean session). When false (default), Claude sees the full conversation history." })),
 		});
 		pi.registerTool<typeof askClaudeParams>({
@@ -1774,6 +1866,8 @@ export default function (pi: ExtensionAPI) {
 			label: askConf?.label ?? "Ask Claude Code",
 			description: askConf?.description ?? (allowFull ? DEFAULT_TOOL_DESCRIPTION_FULL : DEFAULT_TOOL_DESCRIPTION),
 			parameters: askClaudeParams,
+			// Without full mode it can only read, so OMP's approval tier can say so.
+			approval: allowFull ? "exec" : "read",
 			renderCall(args, _options, theme) {
 				const params = readAskClaudeParams(args, false);
 				let text = theme.fg("mdLink", theme.bold("AskClaude "));
@@ -1814,7 +1908,7 @@ export default function (pi: ExtensionAPI) {
 					const truncated = body.length > PREVIEW_MAX_CHARS ? body.substring(0, PREVIEW_MAX_CHARS) : body;
 					const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
 					if (lines.length) text += `\n${theme.fg("toolOutput", lines.join("\n"))}`;
-					if (body.length > PREVIEW_MAX_CHARS || body.split("\n").length > PREVIEW_MAX_LINES) text += `\n${theme.fg("dim", `… (${keyHint("app.tools.expand", "to expand")})`)}`;
+					if (body.length > PREVIEW_MAX_CHARS || body.split("\n").length > PREVIEW_MAX_LINES) text += `\n${theme.fg("dim", "… (expand to see all)")}`;
 
 				}
 
@@ -1848,9 +1942,10 @@ export default function (pi: ExtensionAPI) {
 
 				try {
 					const result = await promptAndWait(askParams.prompt, mode, toolCalls, signal, {
-						systemPrompt: systemPromptText(ctx.getSystemPrompt()),
-						appendSkills: askConf?.appendSkills,
-						model: askParams.model,
+						cwd: ctx.cwd,
+						systemPrompt: ctx.getSystemPrompt(),
+						forward: askConf?.forward,
+						model: askParams.model ?? defaultModel,
 						thinking: askParams.thinking,
 						isolated,
 						context: isolated ? undefined : buildSessionContext(ctx.sessionManager.getBranch()).messages as Context["messages"],

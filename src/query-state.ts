@@ -24,6 +24,10 @@ export class QueryContext {
 	turnToolCallIds: string[] = [];
 	nextHandlerIdx = 0;
 	deferredUserMessages: string[] = [];
+	/** Error text from a failed Claude Code result (is_error / non-success subtype). */
+	resultError: string | undefined = undefined;
+	/** Set when a request was billed to Extra Usage and the bridge stopped the query. */
+	extraUsageBlocked = false;
 
 	// Per-turn (reset together)
 	turnOutput: AssistantMessage | null = null;

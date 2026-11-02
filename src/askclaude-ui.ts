@@ -8,6 +8,8 @@
 // promptAndWait; the provider path exposes tools directly through OMP's TUI
 // and doesn't need this.
 
+import { isAbsolute, relative } from "path";
+
 export interface ToolCallState {
 	name: string;
 	status: string;
@@ -23,14 +25,13 @@ export function extractPath(rawInput: unknown): string | undefined {
 	return undefined;
 }
 
-export function shortPath(p: string): string {
-	const cwd = process.cwd();
-	if (p.startsWith(cwd + "/")) return p.slice(cwd.length + 1);
-	if (p.startsWith("/")) {
-		const parts = p.split("/");
-		if (parts.length > 3) return parts.slice(-2).join("/");
-	}
-	return p;
+// Path relative to cwd when inside it, else the last two segments. Handles both
+// separators so Windows paths shorten too.
+export function shortPath(p: string, cwd: string = process.cwd()): string {
+	const rel = relative(cwd, p);
+	if (rel && !rel.startsWith("..") && !isAbsolute(rel)) return rel.replace(/\\/g, "/");
+	const parts = p.split(/[\\/]+/).filter(Boolean);
+	return parts.length > 3 ? parts.slice(-2).join("/") : p;
 }
 
 export function formatToolAction(tc: ToolCallState): string | undefined {

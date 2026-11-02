@@ -45,7 +45,8 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the maintainer at `jon@learnvig.com`. All complaints will be
+reported to the maintainer through GitHub's private reporting on
+<https://github.com/poog26/omp-claude-bridge>. All complaints will be
 reviewed and investigated promptly and fairly.
 
 ## Attribution
