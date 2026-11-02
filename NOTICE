@@ -1,8 +1,8 @@
-omp-claude-bridge
-=================
+omp-agent-sdk-bridge
+====================
 
 An Oh My Pi (OMP) extension that runs Claude Code through the official Claude
-Agent SDK. Maintained by poog26 (https://github.com/poog26/omp-claude-bridge).
+Agent SDK. Maintained by poog26 (https://github.com/poog26/omp-agent-sdk-bridge).
 
 Original work
 -------------
@@ -19,7 +19,7 @@ Oh My Pi port
 
 This fork
 ---------
-  omp-claude-bridge (0.9 and later)
+  omp-agent-sdk-bridge (0.9 and later; renamed from omp-claude-bridge)
   Copyright (c) 2026 poog26
   Licensed under the MIT License.
 

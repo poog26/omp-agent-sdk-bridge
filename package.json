@@ -1,5 +1,5 @@
 {
-	"name": "omp-claude-bridge",
+	"name": "omp-agent-sdk-bridge",
 	"version": "0.9.0",
 	"private": false,
 	"description": "Oh My Pi extension that runs Claude Code (via the official Claude Agent SDK) as an OMP model provider, forwarding OMP's persona, skills and context, with switchable 1M / 200K windows and an AskClaude delegation tool.",
@@ -18,13 +18,13 @@
 		"Jonathan Borgwing (Oh My Pi port, https://github.com/DevVig)"
 	],
 	"license": "MIT",
-	"homepage": "https://github.com/poog26/omp-claude-bridge#readme",
+	"homepage": "https://github.com/poog26/omp-agent-sdk-bridge#readme",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/poog26/omp-claude-bridge.git"
+		"url": "git+https://github.com/poog26/omp-agent-sdk-bridge.git"
 	},
 	"bugs": {
-		"url": "https://github.com/poog26/omp-claude-bridge/issues"
+		"url": "https://github.com/poog26/omp-agent-sdk-bridge/issues"
 	},
 	"engines": {
 		"node": ">=20"

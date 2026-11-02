@@ -1,4 +1,10 @@
-# omp-claude-bridge
+# omp-agent-sdk-bridge
+
+> **This is an updated version** of [DevVig/omp-claude-bridge](https://github.com/DevVig/omp-claude-bridge), which is itself an Oh My Pi port of Eli Dickinson's [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge). It has been rebuilt for Oh My Pi 18.15+ and the current Claude Agent SDK, with security, billing and compliance fixes; see the [CHANGELOG](CHANGELOG.md).
+>
+> **If you've come across this repository:** don't install it blind. Ask your own Claude Opus 5.5 (for example in Claude Code) to integrate it for you. It can check that your OMP and Claude Code versions are compatible, set up the config for your plan, and verify that everything works on your machine, so you don't run into problems. You can paste this:
+>
+> *"Review https://github.com/poog26/omp-agent-sdk-bridge, then install and integrate it into my Oh My Pi setup. Check that my OMP and Claude Code versions are compatible, set up claude-bridge.json for my Claude plan, and verify it with a short test turn."*
 
 An [Oh My Pi](https://omp.sh) extension that uses the official [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript) to run Claude as an OMP model provider. OMP keeps its TUI, tools, approvals, sessions and memory. Claude Code's unmodified binary handles each model turn under your own Claude login.
 
@@ -17,7 +23,7 @@ This fork stays inside Anthropic's published terms, and the design choices below
 | --- | --- |
 | **Uses the official Agent SDK and the unmodified Claude Code binary** | Anthropic's [legal & compliance page](https://code.claude.com/docs/en/legal-and-compliance) explicitly allows *"an end user signing in to the unmodified Claude Code binary with their own Claude subscription"*. Its [plan article](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) (updated October 7, 2026) says Agent SDK usage signed in with your plan draws from your subscription limits. |
 | **Never touches credentials** | Login happens in Claude Code (`claude` → `/login`) through Anthropic's own flow. The bridge never reads, stores or forwards tokens. |
-| **Honest attribution** | Requests carry the SDK's genuine `cc_entrypoint=sdk-ts` attribution, and the bridge names itself via `CLAUDE_AGENT_SDK_CLIENT_APP=omp-claude-bridge/<version>`, the mechanism the SDK documents for apps built on it. Nothing is spoofed. |
+| **Honest attribution** | Requests carry the SDK's genuine `cc_entrypoint=sdk-ts` attribution, and the bridge names itself via `CLAUDE_AGENT_SDK_CLIENT_APP=omp-agent-sdk-bridge/<version>`, the mechanism the SDK documents for apps built on it. Nothing is spoofed. |
 | **Forwards your words as written** | Earlier versions rewrote "omp" → "environment" and `~/.omp` → `~/.claude` in your AGENTS.md. This fork forwards your content verbatim. |
 | **Respects billing classification** | If Anthropic classifies a request as Extra Usage, the bridge reports it and (by default) stops. It does not reshape prompts to avoid that classification. |
 | **For personal use** | The terms forbid *developers* offering claude.ai login to *their users*, or routing requests through other people's plans. Use this with your own login on your own machine. Don't host it for others or share a login. |
@@ -27,14 +33,14 @@ Usage limits on Pro/Max/Ultra *"assume ordinary, individual usage of Claude Code
 ## Install
 
 ```bash
-omp plugin install git:github.com/poog26/omp-claude-bridge
+omp plugin install git:github.com/poog26/omp-agent-sdk-bridge
 ```
 
 From a local checkout:
 
 ```bash
-git clone https://github.com/poog26/omp-claude-bridge.git
-omp plugin install ./omp-claude-bridge
+git clone https://github.com/poog26/omp-agent-sdk-bridge.git
+omp plugin install ./omp-agent-sdk-bridge
 ```
 
 Then:
@@ -42,7 +48,7 @@ Then:
 1. Log in to Claude Code once: run `claude` in a terminal and type `/login`. The bridge uses Claude Code's login, not OMP's `/login`.
 2. In OMP, pick a `claude-bridge/…` model with `/model`, e.g. `claude-bridge/claude-opus-5-5`.
 
-To try it without installing: `omp -e /path/to/omp-claude-bridge/src/index.ts --model claude-bridge/claude-sonnet-5-5`.
+To try it without installing: `omp -e /path/to/omp-agent-sdk-bridge/src/index.ts --model claude-bridge/claude-sonnet-5-5`.
 
 ## Models and context windows
 

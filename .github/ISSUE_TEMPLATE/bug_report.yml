@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a problem with omp-claude-bridge
+description: Report a problem with omp-agent-sdk-bridge
 labels: ["bug"]
 body:
   - type: markdown
@@ -35,7 +35,7 @@ body:
     attributes:
       label: Environment
       placeholder: |
-        - omp-claude-bridge version:
+        - omp-agent-sdk-bridge version:
         - Oh My Pi version (`pi --version`):
         - OS:
         - Node version:

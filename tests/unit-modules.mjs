@@ -28,13 +28,13 @@ test("apiKey billing requires a key; inherit leaves auth alone", () => {
 });
 
 test("guards always win, the client app is named, parent CC session markers are dropped", () => {
-	const env = ccChildEnv({ clientApp: "omp-claude-bridge/1.0.0" }, {
+	const env = ccChildEnv({ clientApp: "omp-agent-sdk-bridge/1.0.0" }, {
 		DISABLE_AUTO_COMPACT: "0", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_CODE_SESSION_ID: "abc",
 	});
 	assert.equal(env.DISABLE_AUTO_COMPACT, "1");
 	assert.equal(env.ENABLE_CLAUDEAI_MCP_SERVERS, "0");
 	assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
-	assert.equal(env.CLAUDE_AGENT_SDK_CLIENT_APP, "omp-claude-bridge/1.0.0");
+	assert.equal(env.CLAUDE_AGENT_SDK_CLIENT_APP, "omp-agent-sdk-bridge/1.0.0");
 	assert.equal(env.CLAUDECODE, undefined);
 	assert.equal(env.CLAUDE_CODE_ENTRYPOINT, undefined, "the SDK stamps its own entrypoint");
 	assert.equal(env.CLAUDE_CODE_SESSION_ID, undefined);

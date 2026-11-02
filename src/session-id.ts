@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 
 /** UUID-shaped (version 4 layout) id derived from the OMP session key. */
 export function mirrorIdFor(sessionKey: string): string {
-	const hex = createHash("sha256").update(`omp-claude-bridge:${sessionKey}`).digest("hex").slice(0, 32).split("");
+	const hex = createHash("sha256").update(`omp-agent-sdk-bridge:${sessionKey}`).digest("hex").slice(0, 32).split("");
 	hex[12] = "4";
 	hex[16] = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
 	const h = hex.join("");

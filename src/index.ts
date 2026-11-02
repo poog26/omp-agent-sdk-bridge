@@ -58,8 +58,8 @@ const BRIDGE_VERSION = (() => {
 		return "dev";
 	}
 })();
-const CLIENT_APP = `omp-claude-bridge/${BRIDGE_VERSION}`;
-const ISSUES_URL = "https://github.com/poog26/omp-claude-bridge/issues";
+const CLIENT_APP = `omp-agent-sdk-bridge/${BRIDGE_VERSION}`;
+const ISSUES_URL = "https://github.com/poog26/omp-agent-sdk-bridge/issues";
 
 // Ensure log directories exist when debug is enabled
 if (DEBUG) {

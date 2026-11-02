@@ -1,13 +1,13 @@
-# Contributing to omp-claude-bridge
+# Contributing to omp-agent-sdk-bridge
 
-Thanks for your interest in improving **omp-claude-bridge**. Contributions of all
+Thanks for your interest in improving **omp-agent-sdk-bridge**. Contributions of all
 sizes are welcome — bug reports, docs fixes, and features alike.
 
 ## Getting set up
 
 ```bash
-git clone https://github.com/poog26/omp-claude-bridge.git
-cd omp-claude-bridge
+git clone https://github.com/poog26/omp-agent-sdk-bridge.git
+cd omp-agent-sdk-bridge
 npm install
 ```
 
@@ -21,8 +21,8 @@ Requirements:
 Point Oh My Pi at your working copy so changes load on the next run:
 
 ```bash
-omp -e /absolute/path/to/omp-claude-bridge/src/index.ts   # one run
-omp plugin install /absolute/path/to/omp-claude-bridge   # persistent
+omp -e /absolute/path/to/omp-agent-sdk-bridge/src/index.ts   # one run
+omp plugin install /absolute/path/to/omp-agent-sdk-bridge   # persistent
 ```
 
 Enable debug logging while iterating:

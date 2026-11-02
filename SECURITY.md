@@ -16,7 +16,7 @@ Please **do not** open a public issue for security reports.
 
 Instead, use GitHub's private vulnerability reporting:
 **Security → Report a vulnerability** on
-<https://github.com/poog26/omp-claude-bridge>.
+<https://github.com/poog26/omp-agent-sdk-bridge>.
 
 Include:
 - A description of the issue and its impact.

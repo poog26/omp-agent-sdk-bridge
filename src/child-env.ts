@@ -43,7 +43,7 @@ const NON_SUBSCRIPTION_AUTH_VARS = [
 
 export interface ChildEnvOptions {
 	billing?: BillingMode;
-	/** Value for CLAUDE_AGENT_SDK_CLIENT_APP, e.g. "omp-claude-bridge/0.9.0". */
+	/** Value for CLAUDE_AGENT_SDK_CLIENT_APP, e.g. "omp-agent-sdk-bridge/0.9.0". */
 	clientApp?: string;
 }
 

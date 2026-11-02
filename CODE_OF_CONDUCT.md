@@ -46,7 +46,7 @@ an individual is officially representing the community in public spaces.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the maintainer through GitHub's private reporting on
-<https://github.com/poog26/omp-claude-bridge>. All complaints will be
+<https://github.com/poog26/omp-agent-sdk-bridge>. All complaints will be
 reviewed and investigated promptly and fairly.
 
 ## Attribution
