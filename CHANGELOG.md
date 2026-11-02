@@ -9,6 +9,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 First release of the poog26 fork, renamed **omp-agent-sdk-bridge**. Targets Oh My Pi 18.15+
 and Claude Agent SDK 0.3.308.
 
+### Changed
+- Models with 1M included on every plan (Fable 5 / 5.1, Opus 5.5 / 5 / 4.8 / 4.7,
+  Sonnet 5.5 / 5, Haiku 5.5) get a single picker entry. The 1M / 200K pair stays
+  only where the window is a plan difference (Opus 4.6, Sonnet 4.6) or unmeasured.
+
 ### Compliance and billing
 - Forward the user's AGENTS.md / context text verbatim. 0.8 rewrote "omp" to
   "environment" and `~/.omp` to `~/.claude`, which hid the harness and broke paths.

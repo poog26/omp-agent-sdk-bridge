@@ -43,14 +43,15 @@ test("effective window leaves Claude Code's blocking margin (977K on 1M, 177K on
 	assert.equal(effectiveWindow(200_000, 8_000), 189_000);
 });
 
-test("auto: measured models default to 1M, with a 200K alternate", () => {
+test("auto: models with 1M included on every plan get a single 1M entry", () => {
 	const m = byId(settings());
 	assert.equal(m["claude-opus-5-5"].contextWindow, ONE_M);
 	assert.equal(m["claude-opus-5-5"].name, "Claude Opus 5.5 (1M)");
-	assert.equal(m["claude-opus-5-5-200k"].contextWindow, TWO_K);
-	assert.equal(m["claude-opus-5-5-200k"].name, "Claude Opus 5.5 (200K)");
 	assert.equal(m["claude-fable-5-1"].contextWindow, ONE_M);
 	assert.equal(m["claude-sonnet-5-5"].contextWindow, ONE_M);
+	for (const id of ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5"]) {
+		assert.ok(!m[`${id}-200k`], `${id} has no 200K duplicate`);
+	}
 });
 
 test("auto: opus-4-7's bare id is 1M and it has no 200K runtime", () => {
@@ -83,27 +84,29 @@ test("a 200K-only model has no 1M variant", () => {
 	assert.ok(!m["claude-haiku-4-5-1m"]);
 });
 
-test("contextWindow 200k flips which window is unsuffixed; ids follow", () => {
+test("contextWindow 200k makes 200K the default everywhere; plan-gated models keep their 1M entry", () => {
 	const m = byId(settings("200k"));
 	assert.equal(m["claude-opus-5-5"].contextWindow, TWO_K);
-	assert.equal(m["claude-opus-5-5-1m"].contextWindow, ONE_M);
+	assert.ok(!m["claude-opus-5-5-1m"], "1M-everywhere models stay a single entry");
 	assert.equal(claudeCodeModelId({ id: "claude-opus-5-5" }, settings("200k")), "claude-opus-5-5");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-5-5-1m" }, settings("200k")), "claude-opus-5-5[1m]");
+	assert.equal(m["claude-opus-4-6"].contextWindow, TWO_K);
+	assert.equal(m["claude-opus-4-6-1m"].contextWindow, ONE_M);
 	// opus-4-7 has no 200K runtime: its only window stays unsuffixed.
 	assert.equal(m["claude-opus-4-7"].contextWindow, ONE_M);
 });
 
-test("forceTwoHundredK pins one model's default without touching others", () => {
+test("forceTwoHundredK pins one model without touching others", () => {
 	const s = settings("auto", { forceTwoHundredK: ["claude-sonnet-5-5"] });
 	const m = byId(s);
 	assert.equal(m["claude-sonnet-5-5"].contextWindow, TWO_K);
-	assert.equal(m["claude-sonnet-5-5-1m"].contextWindow, ONE_M);
+	assert.equal(claudeCodeModelId({ id: "claude-sonnet-5-5" }, s), "claude-sonnet-5-5");
 	assert.equal(m["claude-opus-5-5"].contextWindow, ONE_M);
 });
 
 test("suffixed variant ids map to the matching runtime", () => {
 	assert.equal(claudeCodeModelId({ id: "claude-opus-5-5" }, settings()), "claude-opus-5-5[1m]");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-5-5-200k" }, settings()), "claude-opus-5-5");
+	assert.equal(claudeCodeModelId({ id: "claude-opus-4-6-1m" }, settings()), "claude-opus-4-6[1m]");
+	assert.equal(claudeCodeModelId({ id: "claude-opus-4-6" }, settings()), "claude-opus-4-6");
 	assert.throws(() => claudeCodeModelId({ id: "claude-opus-4-7-200k" }, settings()), /no Claude Code runtime/);
 });
 

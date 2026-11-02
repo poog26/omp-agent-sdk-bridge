@@ -1,10 +1,10 @@
 // Model catalog + context-window policy for the /model picker.
 //
 // The picker is driven by OMP's own Anthropic catalog, so new Claude models show
-// up when OMP updates, with no bridge release. Each model is registered once per
-// context window Claude Code can serve for it: the unsuffixed id is the default
-// window and the other window gets a "-1m" / "-200k" suffix, so switching window
-// is just picking the other entry.
+// up when OMP updates, with no bridge release. Models with 1M included on every
+// plan get one entry. Where the window is a real plan difference (plan-gated or
+// unmeasured models), the unsuffixed id is the default window and the other gets
+// a "-1m" / "-200k" suffix, so switching window is just picking the other entry.
 //
 // Deliberately free of runtime imports so tests can load it without OMP.
 
@@ -169,6 +169,11 @@ export function buildVariantModels<T extends { id: string; name: string; context
 	for (const m of models) {
 		const defaultKind = defaultWindowFor(m.id, settings, m.contextWindow);
 		const kinds: WindowKind[] = [defaultKind, defaultKind === "1m" ? "200k" : "1m"];
+		// Where 1M is included on every plan, a 200K entry would only compact earlier,
+		// which OMP's own compaction threshold already controls. Offer the second
+		// window only where it is a real plan/entitlement difference: plan-gated
+		// models, and unmeasured ones whose 1M support is still unknown.
+		if (MEASURED_ONE_M.has(m.id) || BARE_IS_ONE_M.has(m.id)) kinds.length = 1;
 		for (const kind of kinds) {
 			const runtime = runtimeFor(m.id, kind, m.contextWindow);
 			if (!runtime) continue;
