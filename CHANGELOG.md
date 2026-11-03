@@ -10,6 +10,11 @@ First release of the poog26 fork, renamed **omp-agent-sdk-bridge**. Targets Oh M
 and Claude Agent SDK 0.3.308.
 
 ### Changed
+- Messages sent while Claude runs a tool (e.g. waiting on a background job) now reach
+  Claude mid-turn, as with native OMP models. The prompt is a long-lived input stream and
+  the message is written to Claude Code (`priority: "next"`) before the tool result, so
+  Claude answers it at that tool boundary while the job keeps running. Previously the
+  bridge held such messages until the whole turn ended. Ported from pi-claude-bridge.
 - OMP's personality is delivered as Claude Code's output style (from a bridge-owned local
   plugin), replacing the preset's terminal-tone section instead of being appended after it.
   `provider.personaAs: "append"` restores appending.

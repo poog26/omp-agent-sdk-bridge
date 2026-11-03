@@ -8,6 +8,7 @@
 
 import type { AssistantMessage, AssistantMessageEventStream, Model } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-ai-shim";
 import type { McpResult } from "./extract-tool-results.js";
+import type { PromptStream } from "./prompt-stream.js";
 
 export interface PendingToolCall {
 	toolName: string;
@@ -28,6 +29,10 @@ export class QueryContext {
 	resultError: string | undefined = undefined;
 	/** Set when a request was billed to Extra Usage and the bridge stopped the query. */
 	extraUsageBlocked = false;
+	/** Claude Code's open input for this query; steers are written into it mid-turn. */
+	promptStream: PromptStream | null = null;
+	/** Steers written to Claude Code but not yet echoed back as consumed. */
+	pendingSteerUuids = new Set<string>();
 
 	// Per-turn (reset together)
 	turnOutput: AssistantMessage | null = null;

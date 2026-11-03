@@ -155,6 +155,7 @@ Global: `~/.omp/agent/claude-bridge.json`. Project: `.omp/claude-bridge.json`, w
 
 - **Provider turns**: Claude Code runs with its built-in tools off. OMP's tools are served over an in-process MCP server; Claude Code may call only those (`dontAsk` with an allow rule for that one server), and OMP executes them with its own approvals.
 - **Session mirrors**: each OMP session has one Claude Code session mirror under a stable id derived from OMP's session id. Unchanged history resumes it (prompt cache stays warm); edits, `/compact` and tree navigation rebuild it from OMP's history, overwriting the same file. OMP subagents and side requests get mirrors of their own, so they can't disturb the main conversation's cache.
+- **Messages mid-turn**: a message you send while Claude runs a tool (say, waiting on a background job) is written into the running Claude Code session ahead of that tool's result, so Claude reads and answers it at once while the job continues. The same as a native OMP model.
 - **One-shot calls**: tool-less calls (compaction summaries, titles, recaps, handoffs) run as isolated, unpersisted single-turn queries with OMP's own prompt for that call. They never touch a mirror.
 - **Failures**: Claude Code error results end the turn as an error (so OMP's retry/fallback chains can act), with guidance for login and Extra Usage problems. A failure that arrives while OMP is running a tool is delivered on OMP's next call instead of being lost.
 

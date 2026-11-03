@@ -10,6 +10,7 @@ import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { randomUUID } from "crypto";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { buildVariantModels, buildModels, claudeCodeModelId, parseVariantId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
@@ -17,6 +18,7 @@ import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.
 import { mirrorIdFor } from "./session-id.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
+import { makePromptStream, userMessage } from "./prompt-stream.js";
 import { loadConfig, type Config, type ForwardSettings } from "./config.js";
 import { composeAppend, extractOmpPromptParts, isAgentPrompt } from "./omp-prompt.js";
 import { ensurePersonaStyle, type PersonaStyle } from "./persona-style.js";
@@ -347,14 +349,6 @@ function extractUserPromptBlocks(messages: Context["messages"]): ContentBlockPar
 		}
 	}
 	return hasImage ? blocks : null;
-}
-
-async function* wrapPromptStream(blocks: ContentBlockParam[]): AsyncIterable<SDKUserMessage> {
-	yield {
-		type: "user",
-		message: { role: "user", content: blocks } as MessageParam,
-		parent_tool_use_id: null,
-	};
 }
 
 function newAssistantOutput(model: Model<any>, text: string, stopReason: AssistantMessage["stopReason"], errorMessage?: string): AssistantMessage {
@@ -1137,8 +1131,16 @@ async function consumeQuery(
 			}
 			continue;
 		}
+		// Claude Code took in a steer: it no longer blocks closing the input.
+		if (message.type === "user" && (message as { isReplay?: boolean }).isReplay === true && (message as { uuid?: string }).uuid) {
+			queryCtx.pendingSteerUuids.delete((message as { uuid: string }).uuid);
+			continue;
+		}
 		if (message.type === "result") {
 			logServedContextWindow("result", message, model);
+			// A result ends a turn, not necessarily the query: a steer not yet taken in
+			// starts another turn. Otherwise close the input so Claude Code exits.
+			if (isErrorResult(message) || queryCtx.pendingSteerUuids.size === 0) queryCtx.promptStream?.end();
 			if (isErrorResult(message)) {
 				queryCtx.resultError = explainClaudeError(resultErrorText(message));
 				debug(`consumeQuery: error result: ${queryCtx.resultError}`);
@@ -1182,6 +1184,76 @@ const EXTRA_USAGE_STOP_MESSAGE =
 	"The bridge stops here so nothing more is charged. Wait for the limit to reset, or set " +
 	'"provider.allowExtraUsage": true in claude-bridge.json to continue on Extra Usage.';
 
+/** Messages OMP appended after this turn's tool results (steers), as content blocks. */
+function steerBlocks(messages: Context["messages"]): ContentBlockParam[] | null {
+	let i = messages.length;
+	while (i > 0 && (messages[i - 1].role === "user" || messages[i - 1].role === "developer")) i--;
+	const blocks: ContentBlockParam[] = [];
+	for (const m of messages.slice(i)) {
+		const content = (m as { content?: unknown }).content;
+		if (typeof content === "string") {
+			if (content.trim()) blocks.push({ type: "text", text: content });
+			continue;
+		}
+		for (const block of Array.isArray(content) ? content : []) {
+			if (block.type === "text" && block.text) blocks.push({ type: "text", text: block.text });
+			else if (block.type === "image" && block.data && block.mimeType) {
+				blocks.push({ type: "image", source: { type: "base64", media_type: block.mimeType as Base64ImageSource["media_type"], data: block.data } });
+			}
+		}
+	}
+	return blocks.length ? blocks : null;
+}
+
+/**
+ * Deliver OMP's tool results to the waiting MCP handlers, writing any steer into
+ * Claude Code's input first. The order is mandatory: the steer and the tool
+ * results reach Claude Code over the same stdin, so the steer must be written
+ * before any handler resolves or it misses this tool boundary.
+ */
+async function deliverToolResults(c: QueryContext, results: McpResult[], steer: ContentBlockParam[] | null): Promise<void> {
+	if (steer) {
+		const preview = steer.map((b) => (b.type === "text" ? b.text : "[image]")).join(" ").slice(0, 60);
+		let delivered = false;
+		if (c.promptStream) {
+			const uuid = randomUUID();
+			c.pendingSteerUuids.add(uuid);
+			try {
+				await c.promptStream.push({ ...userMessage(steer, "next"), uuid });
+				delivered = true;
+				debug(`provider: steer written to Claude Code before tool result: ${preview}`);
+			} catch (error) {
+				c.pendingSteerUuids.delete(uuid);
+				debug("provider: steer push rejected; replaying after the query instead", error);
+			}
+		}
+		if (!delivered) {
+			// No open input (e.g. a continuation query): fall back to replaying it as
+			// a follow-up once the query ends.
+			const text = steer.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("\n");
+			if (text) c.deferredUserMessages.push(text);
+		}
+	}
+	for (const result of results) {
+		const id = result.toolCallId;
+		if (id && c.pendingToolCalls.has(id)) {
+			const pending = c.pendingToolCalls.get(id)!;
+			c.pendingToolCalls.delete(id);
+			debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""}`, JSON.stringify(result.content).slice(0, 200));
+			pending.resolve(result);
+		} else if (id) {
+			c.pendingResults.set(id, result);
+			debug(`provider: queued result [${id}] (${c.pendingResults.size} pending)`);
+		} else {
+			debug(`WARNING: tool result without toolCallId, cannot match`);
+		}
+	}
+	if (c.pendingToolCalls.size > 0) {
+		debug(`WARNING: ${c.pendingToolCalls.size} MCP handlers still waiting after delivering ${results.length} results`);
+		piUI?.notify(`Claude bridge: ${c.pendingToolCalls.size} tool handler(s) still waiting — provider may be stuck`, "warning");
+	}
+}
+
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. */
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
@@ -1216,43 +1288,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		claimCurrentPiStream(stream, "tool-result", resultCtx);
 		resultCtx.resetTurnState(model);
 		debug(`provider: tool results, ${allResults.length} results, ${resultCtx.pendingToolCalls.size} waiting handlers, ctx.msgs=${context.messages.length}`);
-		for (const result of allResults) {
-			const id = result.toolCallId;
-			if (id && resultCtx.pendingToolCalls.has(id)) {
-				const pending = resultCtx.pendingToolCalls.get(id)!;
-				resultCtx.pendingToolCalls.delete(id);
-				debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""}`, JSON.stringify(result.content).slice(0, 200));
-				pending.resolve(result);
-			} else if (id) {
-				resultCtx.pendingResults.set(id, result);
-				debug(`provider: queued result [${id}] (${resultCtx.pendingResults.size} pending)`);
-			} else {
-				debug(`WARNING: tool result without toolCallId, cannot match`);
-			}
-			if (resultCtx.pendingToolCalls.size > 0 && resultCtx.pendingResults.size > 0) {
-				debug(`BUG: both maps non-empty! handlers=${resultCtx.pendingToolCalls.size} results=${resultCtx.pendingResults.size}`);
-			}
-		}
-		if (resultCtx.pendingToolCalls.size > 0) {
-			debug(`WARNING: ${resultCtx.pendingToolCalls.size} MCP handlers still waiting after delivering ${allResults.length} results`);
-			piUI?.notify(`Claude bridge: ${resultCtx.pendingToolCalls.size} tool handler(s) still waiting — provider may be stuck`, "warning");
-		}
-
-		// Detect user messages (steer/followUp) that pi injected into context
-		// during the active query. This happens when:
-		//   - User sends a steer while a tool is executing; pi drains the steer
-		//     queue at the turn boundary and appends it to context alongside the
-		//     tool result, then calls the provider again.
-		//   - A followUp is delivered between tool-result turns.
-		// The bridge can't forward these mid-query (the SDK query is in progress),
-		// so we save them for replay as continuation queries after consumeQuery ends.
-		if (lastMsgRole === "user") {
-			const userPrompt = extractUserPrompt(context.messages);
-			if (userPrompt) {
-				resultCtx.deferredUserMessages.push(userPrompt);
-				debug(`provider: deferred user message for replay after query: ${userPrompt.slice(0, 60)}`);
-			}
-		}
+		// A message the user sent while the tool ran (OMP appends it after the tool
+		// results). It is written into Claude Code's open input *before* the tool
+		// results are released, so Claude Code takes it in at this tool boundary and
+		// answers it mid-turn, as a native agent would. Without this, Claude only saw
+		// e.g. "Wait interrupted by message." and went back to waiting.
+		const steer = lastMsgRole === "user" ? steerBlocks(context.messages) : null;
+		void deliverToolResults(resultCtx, allResults, steer);
 
 		if (slot.s) slot.s.cursor = context.messages.length;
 		resultCtx.latestCursor = Math.max(resultCtx.latestCursor, context.messages.length);
@@ -1324,9 +1366,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		promptText = "[continue]";
 	}
 
-	const prompt: string | AsyncIterable<SDKUserMessage> = promptBlocks
-		? wrapPromptStream(promptBlocks)
-		: promptText;
+	// The prompt is a long-lived input stream rather than a string, so messages the
+	// user sends mid-turn can be written into the running query (see deliverToolResults).
+	// It is closed once a turn ends with no steer still waiting to be taken in.
+	const promptStream = makePromptStream();
+	void promptStream.push(userMessage(promptBlocks ?? [{ type: "text", text: promptText }])).catch(() => {});
+	queryCtx.promptStream = promptStream;
+	queryCtx.pendingSteerUuids.clear();
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
 	// OMP's persona, skills/rules, project context and append text, verbatim.
 	const promptParts = extractOmpPromptParts(context.systemPrompt);
@@ -1341,7 +1387,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// cliModel is the id sent to Claude Code (may carry [1m]); model.id is OMP's picker id.
 	const cliModel = cliModelFor(model);
-	const extraArgs: Record<string, string | null> = { model: cliModel };
+	// replay-user-messages: Claude Code echoes each input message it takes in, which
+	// is how the bridge knows a steer was consumed and the input may be closed.
+	const extraArgs: Record<string, string | null> = { model: cliModel, "replay-user-messages": null };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
 	// Opus 4.7+ default thinking.display to "omitted" (empty thinking text in the stream).
 	if (thinking.display) extraArgs["thinking-display"] = thinking.display;
@@ -1385,7 +1433,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// 3. Start SDK query and claim it for this context
 	let wasAborted = false;
-	const sdkQuery = query({ prompt, options: queryOptions });
+	const sdkQuery = query({ prompt: promptStream.stream, options: queryOptions });
 	queryCtx.activeQuery = sdkQuery;
 	activeQueryContexts.add(queryCtx);
 
@@ -1400,6 +1448,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	};
 	const onAbort = () => {
 		wasAborted = true;
+		promptStream.fail(new Error("Operation aborted"));
+		abortCtx.pendingSteerUuids.clear();
 		// Prevent stale deferred messages from being replayed by parent on pop
 		abortCtx.deferredUserMessages = [];
 		for (const pending of abortCtx.pendingToolCalls.values()) { pending.resolve({ content: [{ type: "text", text: "Operation aborted" }] }); }
@@ -1555,6 +1605,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				queryCtx.activeQuery = null;
 			}
 			activeQueryContexts.delete(queryCtx);
+			promptStream.end();
+			if (queryCtx.promptStream === promptStream) queryCtx.promptStream = null;
+			queryCtx.pendingSteerUuids.clear();
 			sdkQuery.close();
 			if (ephemeral && slot.s) {
 				deleteSession(slot.s.sessionId, slot.s.cwd, process.env.CLAUDE_CONFIG_DIR);
