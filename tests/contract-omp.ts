@@ -59,6 +59,19 @@ try {
 	check("project file cannot widen AskClaude to full mode", config.askClaude?.defaultMode === "read", JSON.stringify(config.askClaude));
 	check("project file can still set harmless AskClaude fields", config.askClaude?.label === "Project label");
 
+	// Usage is priced by OMP's own calculator on the bridge's registered models, so a
+	// turn's footer cost matches what OMP shows for any other model.
+	const { getModels, calculateCost } = await import("@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-ai-shim");
+	const { buildModels } = await import("../src/models.ts");
+	const registered = buildModels(getModels("anthropic") as never[]).find((m) => m.id === "claude-opus-5-5");
+	check("bridge keeps OMP's list price for claude-opus-5-5", registered?.cost.input === 4 && registered?.cost.output === 20,
+		JSON.stringify(registered?.cost));
+	const priced = calculateCost(registered as never, {
+		input: 1_000_000, output: 500_000, cacheRead: 0, cacheWrite: 0, totalTokens: 1_500_000,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	} as never);
+	check("OMP prices a bridge turn with a non-zero total", Math.abs(priced.total - 14) < 1e-9, JSON.stringify(priced));
+
 	// OMP's own wire conversion feeds the bridge; nested fields must survive to Claude.
 	const { type } = await import("@oh-my-pi/omptype");
 	const { toolWireSchema } = await import("@oh-my-pi/pi-ai");

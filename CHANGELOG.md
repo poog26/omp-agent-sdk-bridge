@@ -9,6 +9,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 First release of the poog26 fork, renamed **omp-agent-sdk-bridge**. Targets Oh My Pi 18.15+
 and Claude Agent SDK 0.3.308.
 
+### Fixed
+- Claude turns now show cost in OMP's footer and stats, like other models. The bridge had
+  zeroed every model's prices, so cost read $0 and the footer had nothing to show. Models
+  keep OMP's list prices and are priced by OMP's own calculator, which also fills the
+  cost total and honours the 5-minute / 1-hour cache-write split Claude Code reports. The
+  figure is an API-equivalent estimate, not a charge against your plan. Turns from before
+  this change keep their recorded zero cost.
+
 ### Changed
 - The bridge configures Claude Code only through documented interfaces. Dropped the
   undocumented `CLAUDE_CODE_ELEGANT_MEADOW` flag, set `ENABLE_CLAUDEAI_MCP_SERVERS` to its

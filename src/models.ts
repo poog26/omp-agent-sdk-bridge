@@ -135,14 +135,15 @@ export function buildModels<T extends { id: string; [key: string]: any }>(
 		.filter((m) => typeof m.id === "string" && m.id.startsWith("claude-") && !isDatedAlias(m.id))
 		.filter((m) => !exclude.some((pattern) => pattern && m.id.includes(pattern)))
 		.sort((a, b) => compareModels(a.id, b.id))
-		.map(({ id, name, reasoning, input, contextWindow, maxTokens, thinking, thinkingLevelMap }) => ({
+		.map(({ id, name, reasoning, input, contextWindow, maxTokens, thinking, thinkingLevelMap, cost }) => ({
 			id,
 			name: name as string,
 			reasoning, input, contextWindow: contextWindow as number, maxTokens: maxTokens as number,
 			...(thinking ? { thinking } : {}),
 			...(thinkingLevelMap ? { thinkingLevelMap } : {}),
-			// Subscription usage has no per-token price to show.
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			// OMP's list prices, the same ones every other model's footer and stats use. Your
+			// plan doesn't bill per token, so this is the API-equivalent cost of the usage.
+			cost: cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}));
 }
 

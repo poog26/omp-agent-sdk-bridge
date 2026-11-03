@@ -113,6 +113,7 @@ Kept **out** of bridge turns by default, because OMP owns these:
 - `provider.billing: "inherit"` (default) leaves Claude Code's environment as it is, so it chooses its login exactly as when you run `claude` yourself. If `ANTHROPIC_API_KEY`, a non-Anthropic `ANTHROPIC_BASE_URL` or a cloud-provider switch is set, the bridge warns once per session that requests will bill that instead of your Claude login.
 - `provider.billing: "subscription"` removes `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` and cloud-provider switches from Claude Code's environment, so a key exported for some other tool can't silently redirect (and bill) the bridge. `"apiKey"` requires a Claude Console key; `"inherit"` passes the environment through unchanged.
 - Rate-limit toasts at 80%+ of a window (5-hour / weekly), with the real reset time.
+- **Cost shown in the footer and stats** is an *API-equivalent estimate*: each turn's tokens priced at OMP's list prices for the Claude model, the same way OMP prices every other model. Your Claude plan doesn't bill per token, so this is what the usage would cost on the API, not a charge. Cache writes are priced at the 5-minute or 1-hour rate Claude Code reports.
 - **Extra Usage guard**: when a request is billed to Extra Usage, the bridge says so and stops the turn. Set `provider.allowExtraUsage: true` to continue on Extra Usage.
 
 ## AskClaude tool
