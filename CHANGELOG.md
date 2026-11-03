@@ -10,6 +10,11 @@ First release of the poog26 fork, renamed **omp-agent-sdk-bridge**. Targets Oh M
 and Claude Agent SDK 0.3.308.
 
 ### Changed
+- OMP tool schemas reach Claude exactly as OMP declares them. The old JSON Schema → Zod
+  rebuild flattened nested objects, unions, `const` and `$ref`, so Claude saw e.g. the todo
+  tool's `list` entries as "some object" with no field names. Each property now carries its
+  original JSON Schema as Zod metadata, and argument validation is left to OMP, so a call
+  the MCP layer would have rejected can no longer leave a tool call without its result.
 - Messages sent while Claude runs a tool (e.g. waiting on a background job) now reach
   Claude mid-turn, as with native OMP models. The prompt is a long-lived input stream and
   the message is written to Claude Code (`priority: "next"`) before the tool result, so

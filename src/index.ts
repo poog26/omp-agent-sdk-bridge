@@ -25,7 +25,7 @@ import { ensurePersonaStyle, type PersonaStyle } from "./persona-style.js";
 import { authRouteNotice, ccChildEnv } from "./child-env.js";
 import { planThinking, type ThinkingPlan } from "./effort.js";
 import { askClaudeToolPolicy, type AskClaudeMode } from "./askclaude-tools.js";
-import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
+import { jsonSchemaToZodSchema } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { explainClaudeError, isExtraUsage, newRateLimitTracker, rateLimitNotice, type RateLimitInfo } from "./rate-limit.js";
 
@@ -809,7 +809,7 @@ function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, 
 	const mcpTools = tools.map((tool) => ({
 		name: tool.name,
 		description: tool.description,
-		inputSchema: jsonSchemaToZodShape(tool.parameters),
+		inputSchema: jsonSchemaToZodSchema(tool.parameters),
 		handler: async () => {
 			const toolCallId = queryCtx.turnToolCallIds[queryCtx.nextHandlerIdx++];
 			if (!toolCallId) debug(`WARNING: mcp handler ${tool.name} has no toolCallId (idx=${queryCtx.nextHandlerIdx - 1}, available=${queryCtx.turnToolCallIds.length})`);

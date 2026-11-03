@@ -58,6 +58,20 @@ try {
 		JSON.stringify(config.provider));
 	check("project file cannot widen AskClaude to full mode", config.askClaude?.defaultMode === "read", JSON.stringify(config.askClaude));
 	check("project file can still set harmless AskClaude fields", config.askClaude?.label === "Project label");
+
+	// OMP's own wire conversion feeds the bridge; nested fields must survive to Claude.
+	const { type } = await import("@oh-my-pi/omptype");
+	const { toolWireSchema } = await import("@oh-my-pi/pi-ai");
+	const { z } = await import("zod");
+	const { jsonSchemaToZodSchema } = await import("../src/typebox-to-zod.ts");
+	const wire = toolWireSchema({
+		name: "nested", description: "",
+		parameters: type({ steps: type({ method: "string", args: "unknown[]" }).array(), "mode?": "'a' | 'b'" }),
+	} as never);
+	const listed = z.toJSONSchema(jsonSchemaToZodSchema(wire), { target: "draft-7", io: "input" }) as Record<string, any>;
+	check("nested OMP tool fields reach Claude's tool list",
+		JSON.stringify(listed.properties) === JSON.stringify(wire.properties) && JSON.stringify(listed.required) === JSON.stringify(wire.required),
+		`wire=${JSON.stringify(wire)}\n     listed=${JSON.stringify(listed)}`);
 } catch (e) {
 	check("contract run", false, String((e as Error)?.stack ?? e));
 }
