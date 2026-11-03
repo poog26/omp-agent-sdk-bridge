@@ -3,8 +3,10 @@
 
 export type BillingMode = "subscription" | "apiKey" | "inherit";
 
-// Guards that always hold:
-// - ENABLE_CLAUDEAI_MCP_SERVERS=0: claude.ai-connected MCP servers stay out; OMP serves its own tools.
+// Guards that always hold. Each is a variable Anthropic documents for Claude Code
+// (code.claude.com/docs/en/env-vars); undocumented internal flags are never set, and
+// tests/unit-modules.mjs fails if one is added.
+// - ENABLE_CLAUDEAI_MCP_SERVERS=false: claude.ai-connected MCP servers stay out; OMP serves its own tools.
 // - DISABLE_AUTO_COMPACT=1: OMP owns compaction. CC compacting its own copy would
 //   diverge from OMP's history, which every rebuild is made from.
 // - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1: no update checks or telemetry from the
@@ -12,14 +14,11 @@ export type BillingMode = "subscription" | "apiKey" | "inherit";
 // - CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1: a resumed session ending at a tool
 //   result reads to CC as an interrupted turn, and CC may insert "Continue from where you
 //   left off." ahead of OMP's prompt. OMP supplies every prompt.
-// - CLAUDE_CODE_ELEGANT_MEADOW=0: CC 2.1.308+ otherwise logs every API request into its
-//   session file, about a third more disk for records CC never reads back.
 const CC_CHILD_ENV = {
-	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
+	ENABLE_CLAUDEAI_MCP_SERVERS: "false",
 	DISABLE_AUTO_COMPACT: "1",
 	CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
 	CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
-	CLAUDE_CODE_ELEGANT_MEADOW: "0",
 } as const;
 
 // Set by Claude Code on its own children. When OMP itself was started from inside a

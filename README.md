@@ -27,6 +27,7 @@ This fork stays inside Anthropic's published terms, and the design choices below
 | **Honest attribution** | Requests carry the SDK's genuine `cc_entrypoint=sdk-ts` attribution, and the bridge names itself via `CLAUDE_AGENT_SDK_CLIENT_APP=omp-agent-sdk-bridge/<version>`, the mechanism the SDK documents for apps built on it. Nothing is spoofed. |
 | **Forwards your words as written** | Earlier versions rewrote "omp" → "environment" and `~/.omp` → `~/.claude` in your AGENTS.md. This fork forwards your content verbatim. |
 | **Respects billing classification** | If Anthropic classifies a request as Extra Usage, the bridge reports it and (by default) stops. To be transparent: OMP's own harness instructions are left out of the prompt because Claude Code's preset already provides the agent framework (see [What reaches Claude](#what-reaches-claude)), not to influence billing, and nothing is renamed or disguised. |
+| **Documented interfaces only** | Claude Code is configured only through options, CLI flags, settings and environment variables that Anthropic documents. Undocumented internal flags are never set, and a unit test enforces that for the environment. |
 | **For personal use** | The terms forbid *developers* offering claude.ai login to *their users*, or routing requests through other people's plans. Use this with your own login on your own machine. Don't host it for others or share a login. |
 
 Usage limits on Pro/Max/Ultra *"assume ordinary, individual usage of Claude Code and the Agent SDK"*, and Anthropic reserves the right to enforce without notice. If you want zero ambiguity, set `"billing": "apiKey"` and use a Claude Console key.
@@ -38,6 +39,8 @@ Usage limits on Pro/Max/Ultra *"assume ordinary, individual usage of Claude Code
 - Keep unattended automation off your subscription. Scheduled or always-on agents, and large subagent fleets running while you're away, are where *"ordinary, individual usage"* ends; use an API key (`billing: "apiKey"`) for that.
 - OMP's background roles (`modelRoles` such as `smol`) are fine on `claude-bridge/…` models as far as the terms go: they serve your own interactive work, the way Claude Code uses a small model for titles and summaries. They do count against your plan limits and add a few seconds per call while Claude Code starts, so a cheap, fast model is usually the better pick for them.
 - Your prompts remain subject to Anthropic's [Usage Policy](https://www.anthropic.com/legal/aup), as they would be in Claude Code.
+- Don't use Claude's outputs to train or fine-tune a model (the Usage Policy effective November 12, 2026 forbids it without Anthropic's authorization, and the Consumer Terms already did). Keeping them in a memory or notes system is fine; turning them into a training set is not.
+- You're responsible for what the agent does through its tools, including OMP's computer use and browser tools. Supervise input actions, and don't use them to get around another site's terms or bot checks (CAPTCHAs, rate limits, sign-up automation).
 
 ## Install
 

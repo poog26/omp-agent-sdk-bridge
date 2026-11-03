@@ -46,12 +46,28 @@ test("guards always win, the client app is named, parent CC session markers are 
 		DISABLE_AUTO_COMPACT: "0", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_CODE_SESSION_ID: "abc",
 	});
 	assert.equal(env.DISABLE_AUTO_COMPACT, "1");
-	assert.equal(env.ENABLE_CLAUDEAI_MCP_SERVERS, "0");
+	assert.equal(env.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
 	assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
 	assert.equal(env.CLAUDE_AGENT_SDK_CLIENT_APP, "omp-agent-sdk-bridge/1.0.0");
 	assert.equal(env.CLAUDECODE, undefined);
 	assert.equal(env.CLAUDE_CODE_ENTRYPOINT, undefined, "the SDK stamps its own entrypoint");
 	assert.equal(env.CLAUDE_CODE_SESSION_ID, undefined);
+});
+
+// Compliance rule (see AGENTS.md): the bridge configures Claude Code only through
+// interfaces Anthropic documents. Every variable it sets must be on this list, each
+// checked against code.claude.com/docs/en/env-vars or the Agent SDK's own docs.
+const DOCUMENTED_CHILD_ENV = new Set([
+	"ENABLE_CLAUDEAI_MCP_SERVERS", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+	"CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS", "CLAUDE_AGENT_SDK_CLIENT_APP",
+]);
+
+test("the bridge sets only Claude Code variables that Anthropic documents", () => {
+	for (const billing of ["inherit", "subscription", "apiKey"]) {
+		const env = ccChildEnv({ billing, clientApp: "omp-agent-sdk-bridge/1.0.0" }, billing === "apiKey" ? { ANTHROPIC_API_KEY: "sk" } : {});
+		const added = Object.keys(env).filter((k) => k !== "ANTHROPIC_API_KEY");
+		assert.deepEqual(added.filter((k) => !DOCUMENTED_CHILD_ENV.has(k)), [], billing);
+	}
 });
 
 test("building the child env never mutates the parent env", () => {

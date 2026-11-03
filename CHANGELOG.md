@@ -10,6 +10,12 @@ First release of the poog26 fork, renamed **omp-agent-sdk-bridge**. Targets Oh M
 and Claude Agent SDK 0.3.308.
 
 ### Changed
+- The bridge configures Claude Code only through documented interfaces. Dropped the
+  undocumented `CLAUDE_CODE_ELEGANT_MEADOW` flag, set `ENABLE_CLAUDEAI_MCP_SERVERS` to its
+  documented value `false`, and added a test that fails if the child environment gains a
+  variable not on the checked list. `AGENTS.md` records the compliance rules every change
+  must meet, and the README's terms checklist now covers training on outputs and
+  supervising computer-use actions.
 - OMP tool schemas reach Claude exactly as OMP declares them. The old JSON Schema → Zod
   rebuild flattened nested objects, unions, `const` and `$ref`, so Claude saw e.g. the todo
   tool's `list` entries as "some object" with no field names. Each property now carries its
