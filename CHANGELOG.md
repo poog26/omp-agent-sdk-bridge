@@ -18,6 +18,15 @@ and Claude Agent SDK 0.3.308.
   this change keep their recorded zero cost.
 
 ### Changed
+- Prompt caching. Claude Code is told to use the 5-minute cache (`provider.promptCacheTtl`,
+  default `"5m"`) instead of the subscription's 1-hour default, whose writes cost 2x input
+  against 1.25x; on real bridge sessions 5m was ~10% cheaper. OMP's cache warmer now works on
+  bridge models: a refresh becomes an unsaved fork of the session (`forkSession` +
+  `persistSession: false`) with the identical prompt, tools and settings, cut off once the
+  usage arrives, instead of a new turn. Rebuilding the session after an abort, a failed turn
+  or messages OMP added between turns keeps Claude Code's own records verbatim and converts
+  only what follows; regenerating the whole transcript never matched what Claude Code had
+  cached, so the next request re-wrote the whole conversation to the cache.
 - The bridge configures Claude Code only through documented interfaces. Dropped the
   undocumented `CLAUDE_CODE_ELEGANT_MEADOW` flag, set `ENABLE_CLAUDEAI_MCP_SERVERS` to its
   documented value `false`, and added a test that fails if the child environment gains a

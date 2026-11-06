@@ -37,6 +37,7 @@ Usage limits on Pro/Max/Ultra *"assume ordinary, individual usage of Claude Code
 - **Don't log in to OMP's built-in `anthropic` provider with your Claude Pro/Max account** (OMP's `/login` → Anthropic). That gives a third-party app your claude.ai token, which is exactly what the terms prohibit. Use the `claude-bridge/…` models; they go through Claude Code's own login.
 - Use your own Claude login, on your own machine, for your own work. Don't share the login or run the bridge for other people.
 - Keep unattended automation off your subscription. Scheduled or always-on agents, and large subagent fleets running while you're away, are where *"ordinary, individual usage"* ends; use an API key (`billing: "apiKey"`) for that.
+- OMP's cache warming sends small automatic refreshes for the conversation you're in, and only for a bounded time after you last used it (30 minutes idle, 60 minutes during a run), to avoid re-sending the whole context. That serves your own interactive work and reduces load; it isn't an always-on agent. Turn `providers.cacheWarming` off if you'd rather have no requests you didn't trigger.
 - OMP's background roles (`modelRoles` such as `smol`) are fine on `claude-bridge/…` models as far as the terms go: they serve your own interactive work, the way Claude Code uses a small model for titles and summaries. They do count against your plan limits and add a few seconds per call while Claude Code starts, so a cheap, fast model is usually the better pick for them.
 - Your prompts remain subject to Anthropic's [Usage Policy](https://www.anthropic.com/legal/aup), as they would be in Claude Code.
 - Don't use Claude's outputs to train or fine-tune a model (the Usage Policy effective November 12, 2026 forbids it without Anthropic's authorization, and the Consumer Terms already did). Keeping them in a memory or notes system is fine; turning them into a training set is not.
@@ -116,6 +117,12 @@ Kept **out** of bridge turns by default, because OMP owns these:
 - **Cost shown in the footer and stats** is an *API-equivalent estimate*: each turn's tokens priced at OMP's list prices for the Claude model, the same way OMP prices every other model. Your Claude plan doesn't bill per token, so this is what the usage would cost on the API, not a charge. Cache writes are priced at the 5-minute or 1-hour rate Claude Code reports.
 - **Extra Usage guard**: when a request is billed to Extra Usage, the bridge says so and stops the turn. Set `provider.allowExtraUsage: true` to continue on Extra Usage.
 
+### Prompt caching
+
+- **5-minute cache by default.** On a subscription Claude Code would otherwise write 1-hour cache entries, which cost 2× input against 1.25× for 5-minute ones (reads cost the same). Replayed over 21 real bridge sessions, 5 minutes came out about 10% cheaper, the extra misses from longer pauses included. Set `provider.promptCacheTtl` to `"1h"` for long idle gaps, or `"default"` to leave Claude Code's own choice. It uses Claude Code's documented `CLAUDE_CODE_PROMPT_CACHE_TTL` / `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`.
+- **OMP's cache warming works on bridge models.** When OMP refreshes a cache entry shortly before it expires (`providers.cacheWarming`), the bridge sends Claude Code a side request that leaves no trace: an unsaved fork of the session (`forkSession` + `persistSession: false`) with the same model, prompt, tools and settings, stopped as soon as the usage arrives. Its few tokens of refresh text are reported as input rather than a cache write, so OMP sees that the refresh landed on the entry; the cost shown stays exact. OMP decides whether each refresh is worth its cost and stops after its own windows (30 minutes idle, 60 minutes during a run). Refreshes are requests on your plan, so turn `providers.cacheWarming` off in OMP if you'd rather not have them.
+- **Rebuilds keep the cache.** After an aborted or failed turn, or when OMP adds messages between turns, the bridge keeps Claude Code's own session records verbatim and converts only what came after. Earlier versions regenerated the whole transcript, which never matched what Claude Code had cached, so the next request wrote the whole conversation to the cache again.
+
 ## AskClaude tool
 
 Available whenever the active provider is **not** claude-bridge. Ask your current model to *"ask Claude to review this plan"*, *"ask Claude where auth is handled"*, and so on.
@@ -151,6 +158,7 @@ Global: `~/.omp/agent/claude-bridge.json`. Project: `.omp/claude-bridge.json`, w
 | `claudeOutputStyle` | `false` | Use your own Claude Code output style instead of OMP's persona. |
 | `autoMemoryEnabled` | `false` | Let Claude Code write its auto-memory. |
 | `strictMcpConfig` | `true` | Ignore MCP servers from `~/.claude.json` / `.mcp.json`. |
+| `promptCacheTtl` | `"5m"` | Prompt-cache lifetime: `"5m"`, `"1h"`, or `"default"` (Claude Code decides). See [Prompt caching](#prompt-caching). |
 | `pathToClaudeCodeExecutable` | — | Use this `claude` binary instead of the SDK's bundled one. |
 
 **`askClaude`**: `enabled` (true), `name`, `label`, `description`, `defaultMode` (`"read"`), `defaultModel` (`"opus"`), `defaultIsolated` (false), `allowFullMode` (true), `forward` (personality off by default).

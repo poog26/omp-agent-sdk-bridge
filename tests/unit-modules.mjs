@@ -60,6 +60,7 @@ test("guards always win, the client app is named, parent CC session markers are 
 const DOCUMENTED_CHILD_ENV = new Set([
 	"ENABLE_CLAUDEAI_MCP_SERVERS", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 	"CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS", "CLAUDE_AGENT_SDK_CLIENT_APP",
+	"CLAUDE_CODE_PROMPT_CACHE_TTL", "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL",
 ]);
 
 test("the bridge sets only Claude Code variables that Anthropic documents", () => {
@@ -217,4 +218,14 @@ test("persona style: plugin + style file written, selected as plugin:name, codin
 test("persona style: empty personality yields nothing", () => {
 	assert.equal(personaBody("# Personality\n   \n"), "");
 	assert.equal(ensurePersonaStyle("# Personality\n", "unused"), undefined);
+});
+
+test("prompt cache TTL defaults to 5m for both buckets, can be 1h, or left to Claude Code", () => {
+	const def = ccChildEnv({}, {});
+	assert.equal(def.CLAUDE_CODE_PROMPT_CACHE_TTL, "5m");
+	assert.equal(def.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL, "5m");
+	assert.equal(ccChildEnv({ promptCacheTtl: "1h" }, {}).CLAUDE_CODE_PROMPT_CACHE_TTL, "1h");
+	const left = ccChildEnv({ promptCacheTtl: "default" }, { CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" });
+	assert.equal(left.CLAUDE_CODE_PROMPT_CACHE_TTL, "1h", "the user's own setting is left alone");
+	assert.equal(ccChildEnv({ promptCacheTtl: "default" }, {}).CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL, undefined);
 });

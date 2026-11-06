@@ -15,7 +15,8 @@
     "claudeHooks": false,
     "claudeOutputStyle": false,
     "autoMemoryEnabled": false,
-    "strictMcpConfig": true
+    "strictMcpConfig": true,
+    "promptCacheTtl": "5m"
   },
   "askClaude": {
     "enabled": true,

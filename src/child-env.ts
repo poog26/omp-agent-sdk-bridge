@@ -2,6 +2,12 @@
 // one-shot summaries, AskClaude). One builder so a guard is added once.
 
 export type BillingMode = "subscription" | "apiKey" | "inherit";
+export type PromptCacheTtl = "5m" | "1h" | "default";
+
+/** Seconds a prompt-cache entry lives under `ttl`, as Claude Code requests it. */
+export function promptCacheSeconds(ttl: PromptCacheTtl = "5m"): number | undefined {
+	return ttl === "5m" ? 300 : ttl === "1h" ? 3600 : undefined;
+}
 
 // Guards that always hold. Each is a variable Anthropic documents for Claude Code
 // (code.claude.com/docs/en/env-vars); undocumented internal flags are never set, and
@@ -46,6 +52,8 @@ export interface ChildEnvOptions {
 	billing?: BillingMode;
 	/** Value for CLAUDE_AGENT_SDK_CLIENT_APP, e.g. "omp-agent-sdk-bridge/0.9.0". */
 	clientApp?: string;
+	/** Prompt-cache lifetime; "default" leaves Claude Code's own choice. Default "5m". */
+	promptCacheTtl?: PromptCacheTtl;
 }
 
 /**
@@ -82,5 +90,14 @@ export function ccChildEnv(opts: ChildEnvOptions = {}, parent: NodeJS.ProcessEnv
 	// Identify the bridge in Claude Code's User-Agent, the way the Agent SDK documents
 	// for apps built on it. Requests stay honestly attributed; nothing is spoofed.
 	if (opts.clientApp) env.CLAUDE_AGENT_SDK_CLIENT_APP = opts.clientApp;
+	// Claude Code's documented TTL controls, for both of its request buckets (main
+	// conversation, and side requests such as titles). On a subscription it would
+	// otherwise write 1h entries, billed at 2x input against 1.25x for 5m; measured on
+	// real bridge sessions, 5m came out ~10% cheaper, misses from longer pauses included.
+	const ttl = opts.promptCacheTtl ?? "5m";
+	if (ttl !== "default") {
+		env.CLAUDE_CODE_PROMPT_CACHE_TTL = ttl;
+		env.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL = ttl;
+	}
 	return { ...env, ...CC_CHILD_ENV };
 }

@@ -7,6 +7,7 @@ import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthro
 import { Text } from "@oh-my-pi/pi-tui";
 import { getAgentDir } from "@oh-my-pi/pi-utils";
 import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
+import { extendCleanSession as _extendCleanSession, sessionFileBytes, sessionPath } from "./session-extend.js";
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
@@ -22,7 +23,7 @@ import { makePromptStream, userMessage } from "./prompt-stream.js";
 import { loadConfig, type Config, type ForwardSettings } from "./config.js";
 import { composeAppend, extractOmpPromptParts, isAgentPrompt } from "./omp-prompt.js";
 import { ensurePersonaStyle, type PersonaStyle } from "./persona-style.js";
-import { authRouteNotice, ccChildEnv } from "./child-env.js";
+import { authRouteNotice, ccChildEnv, promptCacheSeconds } from "./child-env.js";
 import { planThinking, type ThinkingPlan } from "./effort.js";
 import { askClaudeToolPolicy, type AskClaudeMode } from "./askclaude-tools.js";
 import { jsonSchemaToZodSchema } from "./typebox-to-zod.js";
@@ -164,7 +165,7 @@ function cliModelFor(model: { id: string }): string {
 }
 
 function childEnv(): NodeJS.ProcessEnv {
-	return ccChildEnv({ billing: providerSettings.billing, clientApp: CLIENT_APP });
+	return ccChildEnv({ billing: providerSettings.billing, clientApp: CLIENT_APP, promptCacheTtl: providerSettings.promptCacheTtl });
 }
 
 // Claude Code settings applied to every bridge-spawned process (flag tier, so they
@@ -241,6 +242,18 @@ interface SessionState {
 	// this — there's no concurrent CC writer during those events, so
 	// in-place rebuild (preserve UUID, deleteSession + createSession) is safe.
 	forceRotate?: boolean;
+	// Byte length of the leading part of CC's JSONL that mirrors OMP's
+	// priors[0..cursor) exactly as CC itself wrote it: measured when a query
+	// starts, so it stays valid after that query is aborted or fails. A rebuild
+	// keeps these bytes verbatim and converts only what follows. Rebuilding
+	// from OMP's history alone can't reproduce the records CC adds on its own
+	// (resume placeholders, environment/date/output-style attachments), so the
+	// rebuilt request diverged right after the system prompt and every cached
+	// message had to be written again. Unset after a history rewrite.
+	cleanBytes?: number;
+	// Set when a query completed: the whole file is clean, including the final
+	// assistant message that OMP's next context carries after `cursor`.
+	completed?: boolean;
 }
 
 // One Claude Code session mirror per OMP session (keyed by the stream options'
@@ -407,6 +420,106 @@ function resultErrorText(message: SDKMessage): string {
 function isErrorResult(message: SDKMessage): boolean {
 	const r = message as SDKMessage & { subtype?: string; is_error?: boolean };
 	return r.subtype !== "success" || r.is_error === true;
+}
+
+// --- Prompt-cache warming ---
+//
+// OMP's cache warmer (providers.cacheWarming) keeps a prompt-cache entry alive by
+// re-sending the last request with maxTokens 1 shortly before the entry expires.
+// Re-sent to the bridge as-is, it would be a new turn that writes into the session.
+// The bridge answers it with a side request that leaves nothing behind: a fork of
+// the session that is never saved (forkSession + persistSession: false), built with
+// the same model, prompt, tools and settings so it reads, and so refreshes, the
+// cached prefix. It is cut off as soon as the usage arrives. OMP decides whether a
+// refresh is worth sending and stops after its own safety windows.
+
+interface WarmRecipe {
+	/** The last message of the request the entry belongs to; a replay carries the same one. */
+	lastMessage: unknown;
+	mcpTools: Tool[];
+	options: NonNullable<Parameters<typeof query>[0]["options"]>;
+}
+
+const warmRecipes = new Map<string, WarmRecipe>();
+const WARM_PROMPT = "Prompt-cache refresh sent automatically by the OMP bridge. No reply is needed.";
+
+function isWarmReplay(context: Context, options: SimpleStreamOptions | undefined, sessionKey: string): boolean {
+	if (options?.maxTokens !== 1) return false;
+	const recipe = warmRecipes.get(sessionKey);
+	return recipe !== undefined && recipe.lastMessage === context.messages[context.messages.length - 1];
+}
+
+function cacheWarmStream(model: Model<any>, sessionKey: string, options?: SimpleStreamOptions): AssistantMessageEventStream {
+	const stream = newAssistantMessageEventStream();
+	void runCacheWarm(model, sessionKey, options, stream);
+	return stream;
+}
+
+async function runCacheWarm(
+	model: Model<any>,
+	sessionKey: string,
+	options: SimpleStreamOptions | undefined,
+	stream: AssistantMessageEventStream,
+): Promise<void> {
+	const recipe = warmRecipes.get(sessionKey);
+	const sessionId = sessionSlot(sessionKey).s?.sessionId;
+	const output = newAssistantOutput(model, "", "stop");
+	let sdkQuery: ReturnType<typeof query> | undefined;
+	const onAbort = () => { try { sdkQuery?.close(); } catch {} };
+	try {
+		if (!recipe || !sessionId) throw new Error("claude-bridge: nothing to keep warm");
+		const { extraArgs = {}, ...base } = recipe.options;
+		const { "replay-user-messages": _replay, ...warmArgs } = extraArgs;
+		const mcpServers = buildMcpServers(recipe.mcpTools, new QueryContext());
+		sdkQuery = query({
+			prompt: WARM_PROMPT,
+			options: {
+				...base,
+				extraArgs: warmArgs,
+				...(mcpServers ? { mcpServers } : {}),
+				resume: sessionId,
+				forkSession: true,
+				persistSession: false,
+				maxTurns: 1,
+				includePartialMessages: true,
+				...makeCliDebugOptions("cache-warm"),
+			},
+		});
+		if (options?.signal?.aborted) onAbort();
+		else options?.signal?.addEventListener("abort", onAbort, { once: true });
+		for await (const message of sdkQuery) {
+			if (message.type === "stream_event" && message.event.type === "message_start") {
+				updateUsage(output, message.event.message.usage as unknown as Record<string, unknown>, model);
+				// OMP counts a refresh as landing on the entry only when it writes nothing,
+				// which its own byte-identical replays do. This one appends the short refresh
+				// message, which Claude Code caches too. When that tail is all it wrote, its
+				// tokens are reported as input; the cost already priced them as a cache write
+				// and stays exact. A real prefix re-write still reports as the miss it is.
+				const { cacheRead, cacheWrite } = output.usage;
+				if (cacheWrite > 0 && cacheRead > 0 && cacheWrite <= Math.max(1024, cacheRead * 0.02)) {
+					output.usage.input += cacheWrite;
+					output.usage.cacheWrite = 0;
+					delete (output.usage as UsageTarget).cttl;
+				}
+				break;
+			}
+			if (message.type === "result") break;
+		}
+		debug(`cache-warm: session=${sessionId.slice(0, 8)} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite}`);
+		stream.push({ type: "start", partial: output });
+		stream.push({ type: "done", reason: "stop", message: output });
+	} catch (e) {
+		const aborted = Boolean(options?.signal?.aborted);
+		debug(`cache-warm: ${aborted ? "aborted" : "failed"}:`, e);
+		output.stopReason = aborted ? "aborted" : "error";
+		output.errorMessage = aborted ? "Operation aborted" : errorMessage(e);
+		stream.push({ type: "error", reason: aborted ? "aborted" : "error", error: output });
+	} finally {
+		options?.signal?.removeEventListener("abort", onAbort);
+		try { sdkQuery?.close(); } catch {}
+		markStreamComplete(stream);
+		stream.end();
+	}
 }
 
 function oneShotStream(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
@@ -627,9 +740,10 @@ function syncSharedSession(
 		const trailingAssistantOnly =
 			missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";
 		if (missed.length === 0 || trailingAssistantOnly) {
-			if (trailingAssistantOnly) {
-				slot.s = { ...slot.s, cursor: priorMessages.length, cwd };
-			}
+			slot.s = {
+				...slot.s, cursor: priorMessages.length, cwd,
+				cleanBytes: sessionFileBytes(slot.s.sessionId, cwd), completed: false,
+			};
 			debug(`Case 3: ${trailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${slot.s.sessionId.slice(0, 8)}, cursor=${slot.s.cursor}`);
 			debug(`syncResult: path=reuse sessionId=${slot.s.sessionId} cursor=${slot.s.cursor}`);
 			return { sessionId: slot.s.sessionId };
@@ -643,6 +757,13 @@ function syncSharedSession(
 		debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${slot.s.sessionId.slice(0, 8)}, cursor=${slot.s.cursor}`);
 		debug(`syncResult: path=clean-start preserve-shared sessionId=${slot.s.sessionId} cursor=${slot.s.cursor}`);
 		return { sessionId: null, preserveSharedSession: true };
+	}
+
+	// EXTEND path: OMP's history before `cursor` is unchanged (no compaction or
+	// tree move), so keep CC's own records for it and convert only the rest.
+	if (slot.s && priorMessages.length >= slot.s.cursor) {
+		const extended = extendCleanSession(slot, priorMessages, cwd, customToolNameToSdk);
+		if (extended) return extended;
 	}
 
 	// REBUILD path
@@ -675,7 +796,7 @@ function syncSharedSession(
 	convertAndImportMessages(session, priorMessages, customToolNameToSdk);
 	session.save();
 	verifyWrittenSession(session.jsonlPath, session.sessionId, session.messages.length, cwd);
-	slot.s = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
+	slot.s = { sessionId: session.sessionId, cursor: priorMessages.length, cwd, cleanBytes: sessionFileBytes(session.sessionId, cwd) };
 	if (previousSessionId === undefined) {
 		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.messages.length} records`);
 	} else if (preserveId) {
@@ -687,6 +808,28 @@ function syncSharedSession(
 	debugSessionPaths(`${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath);
 	debug(`syncResult: path=rebuild sessionId=${session.sessionId} priors=${priorMessages.length} ${previousSessionId === undefined ? "first" : preserveId ? "preserved" : "rotated-post-abort"}`);
 	return { sessionId: session.sessionId };
+}
+
+/** EXTEND path wrapper: see session-extend.ts. Falls back to a rebuild on any failure. */
+function extendCleanSession(
+	slot: { s: SessionState | null },
+	priorMessages: Context["messages"],
+	cwd: string,
+	customToolNameToSdk?: Map<string, string>,
+): SyncResult | undefined {
+	const state = slot.s;
+	if (!state) return undefined;
+	try {
+		const result = _extendCleanSession(state, priorMessages, cwd, (session, tail) => convertAndImportMessages(session, tail, customToolNameToSdk));
+		if (!result) return undefined;
+		verifyWrittenSession(sessionPath(result.sessionId, cwd), result.sessionId, result.totalRecords, cwd);
+		slot.s = { sessionId: result.sessionId, cursor: priorMessages.length, cwd, cleanBytes: result.cleanBytes };
+		debug(`syncResult: path=extend sessionId=${result.sessionId.slice(0, 8)} kept=${result.keptRecords} records, converted ${result.convertedMessages} msgs${result.sessionId !== state.sessionId ? ` (rotated from ${state.sessionId.slice(0, 8)})` : ""}`);
+		return { sessionId: result.sessionId };
+	} catch (e) {
+		debug(`extendCleanSession failed, falling back to a full rebuild:`, e);
+		return undefined;
+	}
 }
 
 // @internal
@@ -1244,10 +1387,12 @@ async function deliverToolResults(c: QueryContext, results: McpResult[], steer: 
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. */
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+	const sessionKey = (options as { sessionId?: string } | undefined)?.sessionId ?? DEFAULT_SESSION_KEY;
+	// OMP's cache warmer re-sending the last request: refresh the cache, not a turn.
+	if (isWarmReplay(context, options, sessionKey)) return cacheWarmStream(model, sessionKey, options);
 	// Compaction, titles, recaps and other side calls never touch a session mirror.
 	if (isOneShotCall(context)) return oneShotStream(model, context, options);
 
-	const sessionKey = (options as { sessionId?: string } | undefined)?.sessionId ?? DEFAULT_SESSION_KEY;
 	const slot = sessionSlot(sessionKey);
 	// Side requests (OMP sets parentSessionId) get their own short-lived mirror,
 	// dropped when they finish so their session files don't pile up.
@@ -1282,6 +1427,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// e.g. "Wait interrupted by message." and went back to waiting.
 		const steer = lastMsgRole === "user" ? steerBlocks(context.messages) : null;
 		void deliverToolResults(resultCtx, allResults, steer);
+		// The request Claude Code sends next carries these results; a warm replay of it
+		// arrives with the same last message.
+		const recipe = warmRecipes.get(sessionKey);
+		if (recipe) recipe.lastMessage = context.messages[context.messages.length - 1];
 
 		if (slot.s) slot.s.cursor = context.messages.length;
 		resultCtx.latestCursor = Math.max(resultCtx.latestCursor, context.messages.length);
@@ -1411,6 +1560,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	};
 	// A clean start under the stable id replaces whatever an earlier OMP process left there.
 	if (!resumeSessionId && syncResult.freshSessionId) deleteSession(syncResult.freshSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+	// What a cache-warm refresh of this conversation must send to match its prefix.
+	if (!ephemeral) {
+		const { resume: _r, sessionId: _s, mcpServers: _m, stderr: _e, ...warmOptions } = queryOptions as typeof queryOptions & { stderr?: unknown };
+		warmRecipes.set(sessionKey, { lastMessage: context.messages[context.messages.length - 1], mcpTools, options: warmOptions });
+	}
 
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
@@ -1502,7 +1656,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			} else if (sessionId) {
 				const cursor = Math.max(context.messages.length, queryCtx.latestCursor, slot.s?.cursor ?? 0);
 				debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
-				slot.s = { sessionId, cursor, cwd };
+				slot.s = { sessionId, cursor, cwd, completed: true };
 			}
 
 			// --- Replay deferred user messages as continuation queries ---
@@ -1802,7 +1956,12 @@ export default function (pi: ExtensionAPI) {
 		forceTwoHundredK: providerSettings.forceTwoHundredK,
 	};
 	MODELS = buildModels(getModels("anthropic"), providerSettings.excludeModels);
-	const registeredModels = buildVariantModels(MODELS, longContextSettings);
+	// The cache lifetime Claude Code is told to use (provider.promptCacheTtl), declared
+	// so OMP's cache warmer can refresh entries before they expire. Both tiers carry
+	// it: Claude Code, not OMP's retention setting, decides what is written.
+	const cacheSeconds = promptCacheSeconds(providerSettings.promptCacheTtl);
+	const registeredModels = buildVariantModels(MODELS, longContextSettings)
+		.map((m) => cacheSeconds ? { ...m, promptCache: { short: cacheSeconds, long: cacheSeconds } } : m);
 
 	// OMP session lifecycle: drop every mirror this instance holds. Subagent sessions
 	// that route through this instance simply rebuild on their next turn.
@@ -1852,7 +2011,7 @@ export default function (pi: ExtensionAPI) {
 	const markRebuild = (event: string) => {
 		for (const [key, state] of sessions) {
 			debug(`${event}: marking needsRebuild on ${key} (${state.sessionId.slice(0, 8)})`);
-			sessions.set(key, { ...state, needsRebuild: true });
+			sessions.set(key, { ...state, needsRebuild: true, cleanBytes: undefined, completed: false });
 		}
 	};
 	pi.on("session_compact", (event) => markRebuild(`session_compact:fromExtension=${event.fromExtension}`));

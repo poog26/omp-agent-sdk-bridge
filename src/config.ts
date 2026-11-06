@@ -8,7 +8,7 @@
 // must not be able to set it. Missing or unparseable files are ignored (error on
 // console.error) so the extension always starts.
 
-import type { BillingMode } from "./child-env.js";
+import type { BillingMode, PromptCacheTtl } from "./child-env.js";
 import type { AskClaudeMode } from "./askclaude-tools.js";
 import type { ContextWindowMode } from "./models.js";
 import { CONFIG_DIR_NAME, getAgentDir } from "@oh-my-pi/pi-utils";
@@ -66,12 +66,19 @@ export interface Config {
 		autoMemoryEnabled?: boolean;
 		/** Block MCP servers from ~/.claude.json / .mcp.json. Default true. */
 		strictMcpConfig?: boolean;
+		/**
+		 * Prompt-cache lifetime Claude Code requests: "5m" (default), "1h", or "default" to
+		 * leave Claude Code's own choice (1h on a subscription within plan usage). 1h cache
+		 * writes cost 2x input against 1.25x for 5m; reads cost the same.
+		 */
+		promptCacheTtl?: PromptCacheTtl;
 		/** Path to the claude binary when the SDK's bundled one can't run. */
 		pathToClaudeCodeExecutable?: string;
 	};
 }
 
 const BILLING_MODES = new Set(["subscription", "apiKey", "inherit"]);
+const CACHE_TTLS = new Set(["5m", "1h", "default"]);
 const WINDOW_MODES = new Set(["auto", "1m", "200k"]);
 const ASK_MODES = new Set(["read", "none", "full"]);
 
@@ -104,6 +111,10 @@ export function validateConfig(config: Config, warn: (msg: string) => void = con
 	if (p.personaAs !== undefined && p.personaAs !== "outputStyle" && p.personaAs !== "append") {
 		warn(`claude-bridge: invalid provider.personaAs "${String(p.personaAs)}", using "outputStyle"`);
 		delete p.personaAs;
+	}
+	if (p.promptCacheTtl !== undefined && !CACHE_TTLS.has(p.promptCacheTtl)) {
+		warn(`claude-bridge: invalid provider.promptCacheTtl "${String(p.promptCacheTtl)}", using "5m"`);
+		delete p.promptCacheTtl;
 	}
 	if (p.plan !== undefined && p.plan !== "pro" && p.plan !== "max") {
 		warn(`claude-bridge: invalid provider.plan "${String(p.plan)}", using "pro"`);
