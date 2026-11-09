@@ -32,7 +32,9 @@ process or billing:
    the SDK's typed options). Don't set undocumented or codename flags, and don't go
    digging in the binary or minified bundles for hidden behaviour. A new variable goes
    into `DOCUMENTED_CHILD_ENV` in `tests/unit-modules.mjs` only after it has been
-   checked against the docs.
+   checked against the docs. Fields the SDK delivers but doesn't type yet (such as a
+   rate-limit event's `unifiedWindows`) may feed display only, must degrade cleanly
+   when absent, and never drive billing, Extra Usage or turn control.
 6. **No billing games.** Never reshape, rename or disguise prompts to influence how
    Anthropic classifies usage (Extra Usage or otherwise). Forward the user's content
    verbatim. If a request is classified as Extra Usage, report it and stop unless the

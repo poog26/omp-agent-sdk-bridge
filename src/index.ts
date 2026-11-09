@@ -28,6 +28,7 @@ import { planThinking, type ThinkingPlan } from "./effort.js";
 import { askClaudeToolPolicy, type AskClaudeMode } from "./askclaude-tools.js";
 import { jsonSchemaToZodSchema } from "./typebox-to-zod.js";
 import { applyClaudeUsage, type UsageTarget } from "./usage.js";
+import { buildUsageReport, loadUsageState, recordAccount, recordRateLimit, saveUsageState } from "./usage-report.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { explainClaudeError, isExtraUsage, newRateLimitTracker, rateLimitNotice, type RateLimitInfo } from "./rate-limit.js";
 
@@ -193,6 +194,8 @@ function claudeSettings(opts: { gitInstructions?: boolean; outputStyle?: string 
 // terminal-tone section) unless the user opted into Claude Code's own style or
 // into plain appending. Falls back to appending if the style can't be written.
 const PERSONA_PLUGIN_DIR = join(getAgentDir(), "claude-bridge", "persona-plugin");
+const USAGE_STATE_PATH = join(getAgentDir(), "claude-bridge", "usage.json");
+let accountInfoRequested = false;
 function personaStyleFor(personality: string | undefined, forward: ForwardSettings): PersonaStyle | undefined {
 	if (!personality || forward.personality === false) return undefined;
 	if (providerSettings.claudeOutputStyle || providerSettings.personaAs === "append") return undefined;
@@ -630,6 +633,8 @@ async function runOneShot(
 function reportRateLimit(info: RateLimitInfo | undefined): boolean {
 	if (!info) return false;
 	debug("rate_limit_event", JSON.stringify(info).slice(0, 300));
+	const state = loadUsageState(USAGE_STATE_PATH);
+	if (recordRateLimit(state, info)) saveUsageState(USAGE_STATE_PATH, state);
 	const notice = rateLimitNotice(info, rateLimitTracker);
 	if (notice) piUI?.notify(notice.message, notice.level === "info" ? "info" : notice.level === "error" ? "error" : "warning");
 	return isExtraUsage(info);
@@ -1577,6 +1582,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const sdkQuery = query({ prompt: promptStream.stream, options: queryOptions });
 	queryCtx.activeQuery = sdkQuery;
 	activeQueryContexts.add(queryCtx);
+	if (!accountInfoRequested) {
+		// Once per process: the account label for OMP's Usage panel, from the SDK's own accountInfo().
+		accountInfoRequested = true;
+		void sdkQuery.accountInfo().then((info) => {
+			const state = loadUsageState(USAGE_STATE_PATH);
+			if (recordAccount(state, info)) saveUsageState(USAGE_STATE_PATH, state);
+		}).catch((e) => debug("accountInfo failed", e));
+	}
 
 	// 4. Capture context for abort handling
 	const abortCtx = queryCtx;
@@ -2035,6 +2048,12 @@ export default function (pi: ExtensionAPI) {
 			models: registeredModels,
 			// Cast: pi-ai AssistantMessageEventStream diamond dep between pi-coding-agent and pi-agent-core
 			streamSimple: streamClaudeAgentSdk as any,
+			// OMP's Usage panel. Read from disk on each fetch so every OMP process shows
+			// the latest figures Claude Code reported, whichever process ran the turn.
+			usage: {
+				id: PROVIDER_ID,
+				fetchUsage: async () => buildUsageReport(PROVIDER_ID, loadUsageState(USAGE_STATE_PATH)),
+			} as any,
 		});
 	} else {
 		// Subsequent instance (subagent session): skip registration entirely.

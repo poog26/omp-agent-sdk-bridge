@@ -9,6 +9,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 First release of the poog26 fork, renamed **omp-agent-sdk-bridge**. Targets Oh My Pi 18.15+
 and Claude Agent SDK 0.3.308.
 
+### Added
+- OMP's Usage panel (`/usage`, `omp usage`) lists the Claude Bridge provider with its
+  5-hour and weekly limits, reset times and account (from the SDK's `accountInfo()`).
+  The figures come from the rate-limit reports Claude Code sends with each turn, kept in
+  `~/.omp/agent/claude-bridge/usage.json` (percentages, reset times, email and plan name;
+  nothing secret). Below the warning threshold those reports carry percentages only in a
+  per-window breakdown the SDK doesn't type yet; it's read as optional display data.
+
 ### Fixed
 - Claude turns now show cost in OMP's footer and stats, like other models. The bridge had
   zeroed every model's prices, so cost read $0 and the footer had nothing to show. Models
