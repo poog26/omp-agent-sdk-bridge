@@ -28,6 +28,7 @@ import { planThinking, type ThinkingPlan } from "./effort.js";
 import { askClaudeToolPolicy, type AskClaudeMode } from "./askclaude-tools.js";
 import { jsonSchemaToZodSchema } from "./typebox-to-zod.js";
 import { applyClaudeUsage, type UsageTarget } from "./usage.js";
+import { subscriptionWarmingAction } from "./cache-warming.js";
 import { buildUsageReport, loadUsageState, recordAccount, recordRateLimit, saveUsageState } from "./usage-report.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { explainClaudeError, isExtraUsage, newRateLimitTracker, rateLimitNotice, type RateLimitInfo } from "./rate-limit.js";
@@ -2027,6 +2028,17 @@ export default function (pi: ExtensionAPI) {
 			sessions.set(key, { ...state, needsRebuild: true, cleanBytes: undefined, completed: false });
 		}
 	};
+	// Idle cache warming on a Claude plan: see cache-warming.ts for why OMP's dollar floor
+	// is dropped for bridge turns. On an API key (or any non-Claude-login route) OMP decides.
+	pi.on("cache_warming_decision", (event, ctx) => {
+		if (ctx.model?.provider !== PROVIDER_ID || providerSettings.cacheWarming === "omp") return undefined;
+		const billing = providerSettings.billing ?? "inherit";
+		const onSubscription = billing === "subscription" || (billing === "inherit" && !authRouteNotice());
+		const action = subscriptionWarmingAction(event, onSubscription);
+		debug(`cache-warm decision: omp=${event.action} bridge=${action ?? "-"} p=${event.continuationProbability} miss=$${event.missCost.toFixed(4)} warm=$${event.warmCost.toFixed(4)}`);
+		return action ? { action } : undefined;
+	});
+
 	pi.on("session_compact", (event) => markRebuild(`session_compact:fromExtension=${event.fromExtension}`));
 	pi.on("session_tree", () => markRebuild("session_tree"));
 

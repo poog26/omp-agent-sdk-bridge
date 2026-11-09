@@ -18,6 +18,14 @@ and Claude Agent SDK 0.3.308.
   per-window breakdown the SDK doesn't type yet; it's read as optional display data.
 
 ### Fixed
+- Idle gaps no longer lose Claude's prompt cache when a refresh would pay off. OMP's cache
+  warmer only refreshes while idle if the expected saving clears $0.05, so a real 89K-token
+  Opus conversation (expected saving ~$0.046, a miss ~24× a refresh) was never refreshed
+  and missed after five minutes. On a Claude login the bridge now answers OMP's
+  `cache_warming_decision` with a break-even rule (refresh when the expected saving beats
+  the refresh). API keys keep OMP's rule, and `provider.cacheWarming: "omp"` restores it.
+  Verified live: a refresh past four minutes idle read the whole prefix and wrote nothing,
+  and the turn after a 5½-minute gap hit the cache.
 - Claude turns now show cost in OMP's footer and stats, like other models. The bridge had
   zeroed every model's prices, so cost read $0 and the footer had nothing to show. Models
   keep OMP's list prices and are priced by OMP's own calculator, which also fills the

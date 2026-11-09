@@ -16,7 +16,8 @@
     "claudeOutputStyle": false,
     "autoMemoryEnabled": false,
     "strictMcpConfig": true,
-    "promptCacheTtl": "5m"
+    "promptCacheTtl": "5m",
+    "cacheWarming": "subscription"
   },
   "askClaude": {
     "enabled": true,

@@ -72,6 +72,13 @@ export interface Config {
 		 * writes cost 2x input against 1.25x for 5m; reads cost the same.
 		 */
 		promptCacheTtl?: PromptCacheTtl;
+		/**
+		 * How OMP's cache warmer decides idle refreshes for Claude turns on your Claude login.
+		 * "subscription" (default): refresh whenever the expected saving beats the refresh,
+		 * since OMP's $0.05 floor measures money a plan doesn't bill. "omp": OMP's own rule.
+		 * On an API key, OMP's rule always applies.
+		 */
+		cacheWarming?: "subscription" | "omp";
 		/** Path to the claude binary when the SDK's bundled one can't run. */
 		pathToClaudeCodeExecutable?: string;
 	};
@@ -115,6 +122,10 @@ export function validateConfig(config: Config, warn: (msg: string) => void = con
 	if (p.promptCacheTtl !== undefined && !CACHE_TTLS.has(p.promptCacheTtl)) {
 		warn(`claude-bridge: invalid provider.promptCacheTtl "${String(p.promptCacheTtl)}", using "5m"`);
 		delete p.promptCacheTtl;
+	}
+	if (p.cacheWarming !== undefined && p.cacheWarming !== "subscription" && p.cacheWarming !== "omp") {
+		warn(`claude-bridge: invalid provider.cacheWarming "${String(p.cacheWarming)}", using "subscription"`);
+		delete p.cacheWarming;
 	}
 	if (p.plan !== undefined && p.plan !== "pro" && p.plan !== "max") {
 		warn(`claude-bridge: invalid provider.plan "${String(p.plan)}", using "pro"`);

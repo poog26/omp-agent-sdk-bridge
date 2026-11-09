@@ -59,6 +59,14 @@ try {
 	check("project file cannot widen AskClaude to full mode", config.askClaude?.defaultMode === "read", JSON.stringify(config.askClaude));
 	check("project file can still set harmless AskClaude fields", config.askClaude?.label === "Project label");
 
+	// provider.cacheWarming: a typo falls back to the default instead of breaking startup.
+	const { validateConfig } = await import("../src/config.ts");
+	const warnings: string[] = [];
+	check("provider.cacheWarming keeps 'omp' and drops unknown values",
+		validateConfig({ provider: { cacheWarming: "omp" } }, (m) => warnings.push(m)).provider?.cacheWarming === "omp" &&
+		validateConfig({ provider: { cacheWarming: "always" as never } }, (m) => warnings.push(m)).provider?.cacheWarming === undefined &&
+		warnings.length === 1, warnings.join(" | "));
+
 	// Usage is priced by OMP's own calculator on the bridge's registered models, so a
 	// turn's footer cost matches what OMP shows for any other model.
 	const { getModels, calculateCost } = await import("@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-ai-shim");
