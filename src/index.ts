@@ -11,7 +11,7 @@ import { extendCleanSession as _extendCleanSession, sessionFileBytes, sessionPat
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { buildVariantModels, buildModels, claudeCodeModelId, parseVariantId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
@@ -32,6 +32,7 @@ import { subscriptionWarmingAction } from "./cache-warming.js";
 import { buildUsageReport, loadUsageState, recordAccount, recordRateLimit, saveUsageState } from "./usage-report.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { explainClaudeError, isExtraUsage, newRateLimitTracker, rateLimitNotice, type RateLimitInfo } from "./rate-limit.js";
+import { QueryMeter, appendLedger, detectMiss, formatReport, formatTokens, promptTokens, readLedger, summarizeLedger, tokensFromReport, type Fingerprint, type LedgerEntry, type PrevCall, type SyncPath } from "./usage-ledger.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -494,6 +495,7 @@ async function runCacheWarm(
 		for await (const message of sdkQuery) {
 			if (message.type === "stream_event" && message.event.type === "message_start") {
 				updateUsage(output, message.event.message.usage as unknown as Record<string, unknown>, model);
+				recordCall({ ts: Date.now(), kind: "warm", model: model.id, session: sessionKey.slice(-8), ...tokensFromReport(message.event.message.usage) }, sessionKey);
 				// OMP counts a refresh as landing on the entry only when it writes nothing,
 				// which its own byte-identical replays do. This one appends the short refresh
 				// message, which Claude Code caches too. When that tail is all it wrote, its
@@ -587,6 +589,9 @@ async function runOneShot(
 		let assistantText = "";
 		let finalText = "";
 		let errorText: string | undefined;
+		// The call's usage: priced onto the result so OMP's stats count compaction and titles too.
+		let resultUsage: Record<string, unknown> | undefined;
+		const startedAt = Date.now();
 
 		for await (const message of sdkQuery) {
 			if (wasAborted) break;
@@ -598,6 +603,8 @@ async function runOneShot(
 				logServedContextWindow("one-shot", message, model);
 				if (isErrorResult(message)) errorText = resultErrorText(message);
 				else finalText = (message as any).result || assistantText;
+				resultUsage = message.usage as unknown as Record<string, unknown>;
+				if (resultUsage) recordCall({ ts: startedAt, kind: "one-shot", model: model.id, ...tokensFromReport(resultUsage) });
 			} else if (message.type === "rate_limit_event") {
 				reportRateLimit((message as any).rate_limit_info);
 			}
@@ -612,12 +619,16 @@ async function runOneShot(
 		if (errorText || !text.trim()) {
 			const msg = explainClaudeError(errorText ?? "Claude Code returned empty text");
 			debug(`one-shot: error ${msg}`);
-			stream.push({ type: "error", reason: "error", error: newAssistantOutput(model, "", "error", msg) });
+			const failed = newAssistantOutput(model, "", "error", msg);
+			if (resultUsage) updateUsage(failed, resultUsage, model);
+			stream.push({ type: "error", reason: "error", error: failed });
 			stream.end();
 			return;
 		}
 		debug(`one-shot: done textLen=${text.length}`);
-		stream.push({ type: "done", reason: "stop", message: newAssistantOutput(model, text, "stop") });
+		const done = newAssistantOutput(model, text, "stop");
+		if (resultUsage) updateUsage(done, resultUsage, model);
+		stream.push({ type: "done", reason: "stop", message: done });
 		stream.end();
 	} catch (err) {
 		const msg = explainClaudeError(errorMessage(err));
@@ -641,8 +652,78 @@ function reportRateLimit(info: RateLimitInfo | undefined): boolean {
 	return isExtraUsage(info);
 }
 
+// --- Usage ledger (usage-ledger.ts) ---
+//
+// Every request Claude Code makes for the bridge is written to the ledger. Conversation
+// requests are checked against the previous one of the same OMP session, so a cache
+// miss inside the cache lifetime is caught with its likeliest cause.
+
+const LEDGER_PATH = join(getAgentDir(), "claude-bridge", "usage-ledger.jsonl");
+// The last request per OMP session, for spotting cache misses.
+const lastCalls = new Map<string, PrevCall>();
+// Sessions whose history OMP rewrote (compaction, /tree) since their last request.
+const rewrittenSessions = new Set<string>();
+// This process's conversation figures, for the footer status.
+const statusTotals = { prompt: 0, cacheRead: 0, misses: 0, lost: 0, unseen: 0 };
+// Misses this large are worth interrupting for; smaller ones only go to the ledger.
+const MISS_NOTIFY_TOKENS = 20_000;
+
+/** What makes up a turn's cached prefix, hashed, so a miss can be traced to what changed. */
+function callFingerprint(system: unknown, tools: Tool[], thinking: unknown): Fingerprint {
+	const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value) ?? "").digest("hex").slice(0, 12);
+	return {
+		system: hash(system),
+		tools: hash(tools.map((t) => [t.name, t.description, t.parameters])),
+		thinking: hash(thinking),
+	};
+}
+
+/** Ledger one request; with a session key, check it for a cache miss and surface waste. */
+function recordCall(entry: LedgerEntry, sessionKey?: string, fingerprint?: Fingerprint): void {
+	if (sessionKey !== undefined) {
+		const prev = lastCalls.get(sessionKey);
+		// "default" leaves the lifetime to Claude Code, which uses 1h on a plan.
+		const ttl = promptCacheSeconds(providerSettings.promptCacheTtl) ?? 3600;
+		const historyRewritten = entry.kind === "turn" && rewrittenSessions.delete(sessionKey);
+		const miss = detectMiss(prev, { startedAt: entry.ts, model: entry.model, tokens: entry, sync: entry.sync, fingerprint, historyRewritten }, ttl);
+		if (miss) entry.miss = miss;
+		// A refresh keeps the previous prefix alive; it doesn't replace it.
+		lastCalls.set(sessionKey, entry.kind === "warm" && prev
+			? { ...prev, endedAt: Date.now() }
+			: { endedAt: Date.now(), prompt: promptTokens(entry), model: entry.model, fingerprint });
+	}
+	appendLedger(LEDGER_PATH, entry);
+
+	if (entry.kind === "turn") {
+		statusTotals.prompt += promptTokens(entry);
+		statusTotals.cacheRead += entry.cacheRead;
+	}
+	if (entry.miss && !entry.miss.expected) {
+		statusTotals.misses++;
+		statusTotals.lost += entry.miss.lost;
+		debug(`cache miss: ${entry.kind} ${entry.model} lost=${entry.miss.lost} sync=${entry.sync ?? "-"} cause=${entry.miss.cause}`);
+		if (entry.miss.lost >= MISS_NOTIFY_TOKENS) {
+			piUI?.notify(`Claude bridge: cache miss, ${formatTokens(entry.miss.lost)} tokens written again (${entry.miss.cause}). /claude-usage for details.`, "warning");
+		}
+	}
+	if (entry.kind === "unattributed") {
+		const unseen = promptTokens(entry) + entry.output;
+		statusTotals.unseen += unseen;
+		debug(`unattributed usage: ${JSON.stringify(entry)}`);
+		piUI?.notify(`Claude bridge: Claude Code used ${formatTokens(unseen)} tokens in requests the bridge never saw. /claude-usage for details.`, "warning");
+	}
+	if (statusTotals.prompt > 0) {
+		const parts = [`Claude cache ${Math.round((statusTotals.cacheRead / statusTotals.prompt) * 100)}%`];
+		if (statusTotals.misses) parts.push(`${statusTotals.misses} miss${statusTotals.misses === 1 ? "" : "es"} (${formatTokens(statusTotals.lost)})`);
+		if (statusTotals.unseen) parts.push(`${formatTokens(statusTotals.unseen)} unseen`);
+		piUI?.setStatus("claude-bridge", parts.join(" · "));
+	}
+}
+
 interface SyncResult {
 	sessionId: string | null;
+	/** How the session was prepared, for the ledger. */
+	path: SyncPath;
 	preserveSharedSession?: boolean;
 	/** Clean start: the stable id Claude Code should give the new session. */
 	freshSessionId?: string;
@@ -752,7 +833,7 @@ function syncSharedSession(
 			};
 			debug(`Case 3: ${trailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${slot.s.sessionId.slice(0, 8)}, cursor=${slot.s.cursor}`);
 			debug(`syncResult: path=reuse sessionId=${slot.s.sessionId} cursor=${slot.s.cursor}`);
-			return { sessionId: slot.s.sessionId };
+			return { sessionId: slot.s.sessionId, path: "reuse" };
 		}
 	}
 	// Only reachable when needsRebuild is false — user-facing history rewrites
@@ -762,7 +843,7 @@ function syncSharedSession(
 	if (slot.s && !slot.s.needsRebuild && priorMessages.length < slot.s.cursor) {
 		debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${slot.s.sessionId.slice(0, 8)}, cursor=${slot.s.cursor}`);
 		debug(`syncResult: path=clean-start preserve-shared sessionId=${slot.s.sessionId} cursor=${slot.s.cursor}`);
-		return { sessionId: null, preserveSharedSession: true };
+		return { sessionId: null, path: "clean-start", preserveSharedSession: true };
 	}
 
 	// EXTEND path: OMP's history before `cursor` is unchanged (no compaction or
@@ -777,7 +858,7 @@ function syncSharedSession(
 	if (priorMessages.length === 0) {
 		debug(`Case 1: clean start, ${messages.length} total messages`);
 		debug(`syncResult: path=clean-start${stableId ? ` stableId=${stableId.slice(0, 8)}` : ""}`);
-		return { sessionId: null, freshSessionId: slot.s?.forceRotate ? undefined : stableId };
+		return { sessionId: null, path: "clean-start", freshSessionId: slot.s?.forceRotate ? undefined : stableId };
 	}
 	const previousSessionId = slot.s?.sessionId;
 	const previousCursor = slot.s?.cursor ?? 0;
@@ -813,7 +894,7 @@ function syncSharedSession(
 	}
 	debugSessionPaths(`${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath);
 	debug(`syncResult: path=rebuild sessionId=${session.sessionId} priors=${priorMessages.length} ${previousSessionId === undefined ? "first" : preserveId ? "preserved" : "rotated-post-abort"}`);
-	return { sessionId: session.sessionId };
+	return { sessionId: session.sessionId, path: "rebuild" };
 }
 
 /** EXTEND path wrapper: see session-extend.ts. Falls back to a rebuild on any failure. */
@@ -831,7 +912,7 @@ function extendCleanSession(
 		verifyWrittenSession(sessionPath(result.sessionId, cwd), result.sessionId, result.totalRecords, cwd);
 		slot.s = { sessionId: result.sessionId, cursor: priorMessages.length, cwd, cleanBytes: result.cleanBytes };
 		debug(`syncResult: path=extend sessionId=${result.sessionId.slice(0, 8)} kept=${result.keptRecords} records, converted ${result.convertedMessages} msgs${result.sessionId !== state.sessionId ? ` (rotated from ${state.sessionId.slice(0, 8)})` : ""}`);
-		return { sessionId: result.sessionId };
+		return { sessionId: result.sessionId, path: "extend" };
 	} catch (e) {
 		debug(`extendCleanSession failed, falling back to a full rebuild:`, e);
 		return undefined;
@@ -1244,11 +1325,14 @@ async function consumeQuery(
 	wasAborted: () => boolean,
 	queryCtx: QueryContext,
 	onExtraUsage: () => void,
+	meter: QueryMeter,
 ): Promise<{ capturedSessionId?: string }> {
 	let capturedSessionId: string | undefined;
 
 	for await (const message of sdkQuery) {
 		if (wasAborted() || queryCtx.extraUsageBlocked) break;
+		// Every request's usage, whether or not an OMP stream is open to show it.
+		if (message.type === "stream_event") meter.event(message.event);
 
 		// Handled whether or not an OMP stream is open: after a tool call the stream is
 		// closed, and a failure or rate limit arriving then must still be recorded.
@@ -1274,6 +1358,9 @@ async function consumeQuery(
 		}
 		if (message.type === "result") {
 			logServedContextWindow("result", message, model);
+			// Claude Code's own total for the query, against the requests the bridge saw.
+			const unseen = meter.unattributed(message.usage);
+			if (unseen) recordCall({ ts: Date.now(), kind: "unattributed", model: model.id, ...unseen });
 			// A result ends a turn, not necessarily the query: a steer not yet taken in
 			// starts another turn. Otherwise close the input so Claude Code exits.
 			if (isErrorResult(message) || queryCtx.pendingSteerUuids.size === 0) queryCtx.promptStream?.end();
@@ -1311,6 +1398,8 @@ async function consumeQuery(
 		}
 	}
 
+	// A request cut off by an abort or error still used the plan.
+	meter.close();
 	debug(`consumeQuery: loop exited, wasAborted=${wasAborted()}, extraUsageBlocked=${queryCtx.extraUsageBlocked}, capturedSessionId=${capturedSessionId?.slice(0, 8) ?? "none"}`);
 	return { capturedSessionId };
 }
@@ -1571,6 +1660,18 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		const { resume: _r, sessionId: _s, mcpServers: _m, stderr: _e, ...warmOptions } = queryOptions as typeof queryOptions & { stderr?: unknown };
 		warmRecipes.set(sessionKey, { lastMessage: context.messages[context.messages.length - 1], mcpTools, options: warmOptions });
 	}
+	// Each request Claude Code makes for this turn goes to the usage ledger.
+	const fingerprint = callFingerprint(
+		[systemPromptAppend, personaStyle ? promptParts.personality : undefined],
+		mcpTools,
+		[thinkingOptions(thinking), thinking.display],
+	);
+	const newTurnMeter = (sync: SyncPath) => new QueryMeter((index, startedAt, tokens, aborted) => recordCall(
+		{ ts: startedAt, kind: "turn", model: model.id, session: sessionKey.slice(-8), sync: index === 0 ? sync : "in-query", ...tokens, ...(aborted ? { aborted } : {}) },
+		sessionKey,
+		fingerprint,
+	));
+	const turnMeter = newTurnMeter(syncResult.path);
 
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
@@ -1626,7 +1727,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	};
 
 	// Background consumer — runs until query ends
-	consumeQuery(sdkQuery, customToolNameToPi, model, () => wasAborted, queryCtx, stopForExtraUsage)
+	consumeQuery(sdkQuery, customToolNameToPi, model, () => wasAborted, queryCtx, stopForExtraUsage, turnMeter)
 		.then(async ({ capturedSessionId }) => {
 			debug(`provider: consumeQuery completed, stopReason=${queryCtx.turnOutput?.stopReason}, error=${queryCtx.turnOutput?.errorMessage}, aborted=${wasAborted}`);
 
@@ -1694,8 +1795,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 					debug(`provider: continuation query, model=${cliModel}, resume=${resumeId.slice(0, 8)}, prompt=${steerPrompt.slice(0, 60)}`);
 
+					const contMeter = newTurnMeter("continuation");
 					try {
-						const { capturedSessionId: contSid } = await consumeQuery(contQuery, customToolNameToPi, model, () => wasAborted, queryCtx, () => { try { contQuery.close(); } catch {} });
+						const { capturedSessionId: contSid } = await consumeQuery(contQuery, customToolNameToPi, model, () => wasAborted, queryCtx, () => { try { contQuery.close(); } catch {} }, contMeter);
 						const sid = contSid ?? slot.s?.sessionId;
 						if (sid) {
 							slot.s = { sessionId: sid, cursor: slot.s?.cursor ?? 0, cwd };
@@ -1704,6 +1806,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 						debug(`provider: continuation query error:`, contError);
 						break;
 					} finally {
+						contMeter.close();
 						contQuery.close();
 					}
 				}
@@ -1752,6 +1855,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		})
 		.finally(() => {
 			if (options?.signal) options.signal.removeEventListener("abort", onAbort);
+			turnMeter.close();
 			if (queryCtx.activeQuery === sdkQuery) {
 				// Drain pending handlers for this query
 				for (const pending of queryCtx.pendingToolCalls.values()) { pending.resolve({ content: [{ type: "text", text: "Query ended" }] }); }
@@ -1922,6 +2026,7 @@ async function promptAndWait(
 					const r = message as any;
 					if (r.usage) {
 						debug(`askClaude: result usage: in=${r.usage.input_tokens} out=${r.usage.output_tokens} cacheRead=${r.usage.cache_read_input_tokens ?? 0} cacheWrite=${r.usage.cache_creation_input_tokens ?? 0} turns=${r.num_turns ?? "?"}`);
+						recordCall({ ts: Date.now(), kind: "askclaude", model: cliModel, ...tokensFromReport(r.usage) });
 					}
 					if (isErrorResult(message)) failure ??= explainClaudeError(resultErrorText(message));
 					else if (!responseText && r.result) responseText = r.result;
@@ -2027,6 +2132,8 @@ export default function (pi: ExtensionAPI) {
 			debug(`${event}: marking needsRebuild on ${key} (${state.sessionId.slice(0, 8)})`);
 			sessions.set(key, { ...state, needsRebuild: true, cleanBytes: undefined, completed: false });
 		}
+		// The next request's cache miss follows from the rewrite; the ledger says so.
+		for (const key of lastCalls.keys()) rewrittenSessions.add(key);
 	};
 	// Idle cache warming on a Claude plan: see cache-warming.ts for why OMP's dollar floor
 	// is dropped for bridge turns. On an API key (or any non-Claude-login route) OMP decides.
@@ -2041,6 +2148,22 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_compact", (event) => markRebuild(`session_compact:fromExtension=${event.fromExtension}`));
 	pi.on("session_tree", () => markRebuild("session_tree"));
+
+	// /claude-usage [hours]: what the bridge spent from the ledger, with any cache misses
+	// or usage Claude Code reported that the bridge never saw.
+	pi.registerCommand("claude-usage", {
+		description: "Claude bridge usage, cache misses and unseen usage: /claude-usage [hours] | off",
+		handler: async (args, ctx) => {
+			const arg = args.trim();
+			if (arg === "off") {
+				ctx.ui.setWidget("claude-bridge-usage", undefined);
+				return;
+			}
+			const hours = Number(arg) > 0 ? Number(arg) : 24;
+			const summary = summarizeLedger(readLedger(LEDGER_PATH, Date.now() - hours * 3_600_000));
+			ctx.ui.setWidget("claude-bridge-usage", [...formatReport(summary, hours, LEDGER_PATH), "  (/claude-usage off to close)"]);
+		},
+	});
 
 	// --- Provider ---
 	//

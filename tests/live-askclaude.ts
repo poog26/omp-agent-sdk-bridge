@@ -10,6 +10,7 @@ const tools: Record<string, any> = {};
 const stubPi = {
 	on() {},
 	registerTool(def: any) { tools[def.name] = def; },
+	registerCommand() {},
 	registerProvider() {},
 };
 (await import("../src/index.ts")).default(stubPi as any);

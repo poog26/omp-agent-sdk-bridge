@@ -10,6 +10,16 @@ First release of the poog26 fork, renamed **omp-agent-sdk-bridge**. Targets Oh M
 and Claude Agent SDK 0.3.308.
 
 ### Added
+- A usage ledger (`~/.omp/agent/claude-bridge/usage-ledger.jsonl`) records every request
+  Claude Code makes for the bridge: conversation turns, compaction summaries and titles,
+  cache refreshes and AskClaude. Each conversation request is checked against the previous
+  one of its session: a cache miss inside the cache lifetime is logged with its likeliest
+  cause (tool list, system prompt or thinking changed, session rebuilt, or unexplained) and
+  warned about from 20K tokens. Claude Code's per-query total is reconciled against the
+  requests the bridge saw, so calls made outside the conversation are flagged. The footer
+  shows the session's cache hit rate and any misses; `/claude-usage [hours]` summarizes the
+  ledger. Measured before shipping: Claude Code made no calls beyond the streamed ones, and
+  an aborted request's cache entry was read in full by the next one.
 - OMP's Usage panel (`/usage`, `omp usage`) lists the Claude Bridge provider with its
   5-hour and weekly limits, reset times and account (from the SDK's `accountInfo()`).
   The figures come from the rate-limit reports Claude Code sends with each turn, kept in
@@ -18,6 +28,8 @@ and Claude Agent SDK 0.3.308.
   per-window breakdown the SDK doesn't type yet; it's read as optional display data.
 
 ### Fixed
+- Compaction summaries, titles and recaps reported zero usage to OMP, so their tokens
+  never showed in OMP's stats. They now carry the usage Claude Code reports.
 - Idle gaps no longer lose Claude's prompt cache when a refresh would pay off. OMP's cache
   warmer only refreshes while idle if the expected saving clears $0.05, so a real 89K-token
   Opus conversation (expected saving ~$0.046, a miss ~24× a refresh) was never refreshed

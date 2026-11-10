@@ -125,6 +125,17 @@ Kept **out** of bridge turns by default, because OMP owns these:
 - **Idle refreshes on a Claude plan.** OMP sends an idle refresh only when its expected saving clears a fixed $0.05. That floor is about money, which a plan doesn't bill per request, and it skips refreshes that are clearly worth it: an 89K-token Opus conversation lands at about $0.046, though a miss costs ~24× a refresh. On your Claude login the bridge keeps OMP's estimate and drops only the floor, so a refresh is sent whenever it's expected to save more than it costs. On an API key OMP's rule applies, and `provider.cacheWarming: "omp"` restores it everywhere. Gaps longer than OMP's 30-minute idle window still lose a 5-minute cache; `promptCacheTtl: "1h"` covers those.
 - **Rebuilds keep the cache.** After an aborted or failed turn, or when OMP adds messages between turns, the bridge keeps Claude Code's own session records verbatim and converts only what came after. Earlier versions regenerated the whole transcript, which never matched what Claude Code had cached, so the next request wrote the whole conversation to the cache again.
 
+### Watching for wasted usage
+
+Every request Claude Code makes for the bridge (conversation turns, compaction summaries and titles, cache refreshes, AskClaude) is written to a ledger, `~/.omp/agent/claude-bridge/usage-ledger.jsonl`, one JSON line each with its input, cache-read, cache-write and output tokens.
+
+- **Cache misses.** Each conversation request is compared with the one before it in the same OMP session. If it lands inside the cache lifetime but writes again what the previous request had cached, it's logged as a miss with the likeliest cause: OMP's tool list changed, the system prompt changed (persona, skills, rules, project context), thinking settings changed, the bridge rebuilt the session, or unexplained. Misses after `/compact` or `/tree` are logged as expected. A miss of 20K tokens or more also raises a warning.
+- **Usage the bridge didn't see.** At the end of each query, Claude Code's own token total is checked against the requests the bridge saw streamed. Anything extra means Claude Code made calls outside the conversation; it's logged as `unattributed` and raises a warning.
+- **Footer status** shows this OMP process's conversation cache hit rate, plus any misses and unseen usage, e.g. `Claude cache 96% · 1 miss (180K)`.
+- **`/claude-usage [hours]`** (default 24) shows a summary of the ledger: requests and tokens by kind, the hit rate, and the largest misses with their causes. `/claude-usage off` closes it.
+
+Compaction summaries, titles and recaps also report their usage to OMP now, so they count in OMP's stats like any other model's calls.
+
 ## AskClaude tool
 
 Available whenever the active provider is **not** claude-bridge. Ask your current model to *"ask Claude to review this plan"*, *"ask Claude where auth is handled"*, and so on.

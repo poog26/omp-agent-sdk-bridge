@@ -9,6 +9,7 @@ const registered: { streamSimple?: (model: any, context: any, options?: any) => 
 const stubPi = {
 	on() {},
 	registerTool() {},
+	registerCommand() {},
 	registerProvider(_name: string, config: any) { Object.assign(registered, config); },
 };
 
