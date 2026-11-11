@@ -1,10 +1,10 @@
 // Model catalog + context-window policy for the /model picker.
 //
 // The picker is driven by OMP's own Anthropic catalog, so new Claude models show
-// up when OMP updates, with no bridge release. Models with 1M included on every
-// plan get one entry. Where the window is a real plan difference (plan-gated or
-// unmeasured models), the unsuffixed id is the default window and the other gets
-// a "-1m" / "-200k" suffix, so switching window is just picking the other entry.
+// up when OMP updates, with no bridge release. Models whose window is 1M (measured,
+// or stated by the catalog for a new model) get one entry. Only where the window
+// is a real plan difference (plan-gated models) is the unsuffixed id the default
+// window while the other gets a "-1m" / "-200k" suffix to pick instead.
 //
 // Deliberately free of runtime imports so tests can load it without OMP.
 
@@ -32,13 +32,15 @@ export const ONE_M_CONTEXT = 1_000_000;
 // --- Measured Claude Code (Agent SDK, claude.ai login) behavior ---
 //
 // - `[1m]` is the reliable way to request 1M; bare ids serve 200K.
-// - An unentitled `[1m]` id is rejected outright (400/429) on every turn, so a
-//   model only defaults to 1M once someone has measured that it works.
+// - An unentitled `[1m]` id is rejected outright (400/429) on every turn. Every
+//   model since Opus 4.7 has had 1M included on every plan, so a new model the
+//   catalog lists at 1M defaults to it; `forceTwoHundredK` pins one that doesn't.
 // Sources: pi-claude-bridge diag/CONTEXT-SIZE.md (through 2026-10-30) and the
 // omp-claude-bridge 0.8 measurements.
 
 /** `[1m]` measured to serve 1M on every plan. */
 const MEASURED_ONE_M = new Set([
+	"claude-fable-5-2",
 	"claude-fable-5",
 	"claude-fable-5-1",
 	"claude-opus-5-5",
@@ -79,9 +81,8 @@ export function defaultWindowFor(id: string, settings: LongContextSettings, cata
 	let preferred: WindowKind;
 	if (settings.forceTwoHundredK?.includes(id)) preferred = "200k";
 	else if (settings.contextWindow !== "auto") preferred = settings.contextWindow;
-	else if (MEASURED_ONE_M.has(id) || BARE_IS_ONE_M.has(id)) preferred = "1m";
 	else if (PLAN_GATED_ONE_M[id]) preferred = PLAN_GATED_ONE_M[id](settings) ? "1m" : "200k";
-	else preferred = "200k"; // unmeasured: safe default
+	else preferred = hasOneMRuntime(id, catalogWindow) ? "1m" : "200k"; // new models: trust the catalog
 	if (available(preferred)) return preferred;
 	return preferred === "1m" ? "200k" : "1m";
 }
@@ -172,9 +173,8 @@ export function buildVariantModels<T extends { id: string; name: string; context
 		const kinds: WindowKind[] = [defaultKind, defaultKind === "1m" ? "200k" : "1m"];
 		// Where 1M is included on every plan, a 200K entry would only compact earlier,
 		// which OMP's own compaction threshold already controls. Offer the second
-		// window only where it is a real plan/entitlement difference: plan-gated
-		// models, and unmeasured ones whose 1M support is still unknown.
-		if (MEASURED_ONE_M.has(m.id) || BARE_IS_ONE_M.has(m.id)) kinds.length = 1;
+		// window only where it is a real plan difference: the plan-gated models.
+		if (!(m.id in PLAN_GATED_ONE_M)) kinds.length = 1;
 		for (const kind of kinds) {
 			const runtime = runtimeFor(m.id, kind, m.contextWindow);
 			if (!runtime) continue;

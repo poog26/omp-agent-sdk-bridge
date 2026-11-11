@@ -70,12 +70,16 @@ test("auto: plan-gated models follow plan / extra usage", () => {
 	assert.equal(byId(settings())["claude-opus-4-6-1m"].contextWindow, ONE_M);
 });
 
-test("auto: an unmeasured model defaults to the safe 200K bare id, 1M offered as an opt-in variant", () => {
+test("auto: a new model the catalog lists at 1M gets a single 1M entry without being measured", () => {
 	const m = byId(settings());
-	assert.equal(m["claude-future-9"].contextWindow, TWO_K);
-	assert.equal(m["claude-future-9-1m"].contextWindow, ONE_M);
-	assert.equal(claudeCodeModelId({ id: "claude-future-9" }, settings(), 1_000_000), "claude-future-9");
-	assert.equal(claudeCodeModelId({ id: "claude-future-9-1m" }, settings(), 1_000_000), "claude-future-9[1m]");
+	assert.equal(m["claude-future-9"].contextWindow, ONE_M);
+	assert.equal(m["claude-future-9"].name, "Claude Future 9 (1M)");
+	assert.ok(!m["claude-future-9-1m"] && !m["claude-future-9-200k"], "no second entry");
+	assert.equal(claudeCodeModelId({ id: "claude-future-9" }, settings(), 1_000_000), "claude-future-9[1m]");
+	// Escape hatch if Claude Code turns out not to serve it at 1M.
+	const pinned = settings("auto", { forceTwoHundredK: ["claude-future-9"] });
+	assert.equal(byId(pinned)["claude-future-9"].contextWindow, TWO_K);
+	assert.equal(claudeCodeModelId({ id: "claude-future-9" }, pinned, 1_000_000), "claude-future-9");
 });
 
 test("a 200K-only model has no 1M variant", () => {

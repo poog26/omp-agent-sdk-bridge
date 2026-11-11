@@ -157,7 +157,7 @@ function resolveModel(input: string) {
 	return _resolveModel(MODELS, input);
 }
 
-/** Catalog window for a registered (possibly "-1m"/"-200k") id; drives the 1M offer for unmeasured models. */
+/** Catalog window for a registered (possibly "-1m"/"-200k") id; decides the window of models the bridge has no measurement for. */
 function catalogWindow(registeredId: string): number | undefined {
 	const { baseId } = parseVariantId(registeredId);
 	return MODELS.find((m) => m.id === baseId)?.contextWindow;

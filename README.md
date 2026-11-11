@@ -73,12 +73,12 @@ Newer models have 1M included on every plan, so they get **one entry at 1M**. A 
 
 | Model | Picker entries |
 | --- | --- |
-| Fable 5 / 5.1, Opus 5.5 / 5 / 4.8, Sonnet 5.5 / 5, Haiku 5.5 | one, 1M (included on every plan) |
+| Fable 5 / 5.1 / 5.2, Opus 5.5 / 5 / 4.8, Sonnet 5.5 / 5, Haiku 5.5 | one, 1M (included on every plan) |
 | Opus 4.7 | one, 1M (Claude Code serves no 200K runtime for it) |
 | Opus 4.6 | 200K + `-1m`; 1M is the default on Max (`plan: "max"`) or with `longContextExtraUsage` |
 | Sonnet 4.6 | 200K + `-1m`; 1M is the default with `longContextExtraUsage` |
 | Haiku 4.5 and other 200K-only models | one, 200K |
-| new models nobody has measured yet | 200K + `-1m` to try; asking for 1M on a plan that doesn't include it fails every turn, so 200K is the safe default |
+| new models the catalog lists at 1M | one, 1M: every model since Opus 4.7 has had it on every plan. If one is rejected at 1M, pin it with `forceTwoHundredK` |
 
 `provider.contextWindow: "200k"` makes 200K the default everywhere; `provider.forceTwoHundredK` pins individual models to 200K.
 
