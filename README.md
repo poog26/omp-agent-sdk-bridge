@@ -131,7 +131,7 @@ Every request Claude Code makes for the bridge (conversation turns, compaction s
 
 - **Cache misses.** Each conversation request is compared with the one before it in the same OMP session. If it lands inside the cache lifetime but writes again what the previous request had cached, it's logged as a miss with the likeliest cause: OMP's tool list changed, the system prompt changed (persona, skills, rules, project context), thinking settings changed, the bridge rebuilt the session, or unexplained. Misses after `/compact` or `/tree` are logged as expected. A miss of 20K tokens or more also raises a warning.
 - **Usage the bridge didn't see.** At the end of each query, Claude Code's own token total is checked against the requests the bridge saw streamed. Anything extra means Claude Code made calls outside the conversation; it's logged as `unattributed` and raises a warning.
-- **Footer status** shows this OMP process's conversation cache hit rate, plus any misses and unseen usage, e.g. `Claude cache 96% · 1 miss (180K)`.
+- **Footer cache status** is no longer supplied by the bridge. A separate OMP extension can display `cache N%` from normalized conversation usage across every provider; the bridge keeps its miss warnings, ledger and `/claude-usage` report without owning the footer.
 - **`/claude-usage [hours]`** (default 24) shows a summary of the ledger: requests and tokens by kind, the hit rate, and the largest misses with their causes. `/claude-usage off` closes it.
 
 Compaction summaries, titles and recaps also report their usage to OMP now, so they count in OMP's stats like any other model's calls.

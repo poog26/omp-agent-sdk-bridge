@@ -663,8 +663,6 @@ const LEDGER_PATH = join(getAgentDir(), "claude-bridge", "usage-ledger.jsonl");
 const lastCalls = new Map<string, PrevCall>();
 // Sessions whose history OMP rewrote (compaction, /tree) since their last request.
 const rewrittenSessions = new Set<string>();
-// This process's conversation figures, for the footer status.
-const statusTotals = { prompt: 0, cacheRead: 0, misses: 0, lost: 0, unseen: 0 };
 // Misses this large are worth interrupting for; smaller ones only go to the ledger.
 const MISS_NOTIFY_TOKENS = 20_000;
 
@@ -694,13 +692,7 @@ function recordCall(entry: LedgerEntry, sessionKey?: string, fingerprint?: Finge
 	}
 	appendLedger(LEDGER_PATH, entry);
 
-	if (entry.kind === "turn") {
-		statusTotals.prompt += promptTokens(entry);
-		statusTotals.cacheRead += entry.cacheRead;
-	}
 	if (entry.miss && !entry.miss.expected) {
-		statusTotals.misses++;
-		statusTotals.lost += entry.miss.lost;
 		debug(`cache miss: ${entry.kind} ${entry.model} lost=${entry.miss.lost} sync=${entry.sync ?? "-"} cause=${entry.miss.cause}`);
 		if (entry.miss.lost >= MISS_NOTIFY_TOKENS) {
 			piUI?.notify(`Claude bridge: cache miss, ${formatTokens(entry.miss.lost)} tokens written again (${entry.miss.cause}). /claude-usage for details.`, "warning");
@@ -708,15 +700,8 @@ function recordCall(entry: LedgerEntry, sessionKey?: string, fingerprint?: Finge
 	}
 	if (entry.kind === "unattributed") {
 		const unseen = promptTokens(entry) + entry.output;
-		statusTotals.unseen += unseen;
 		debug(`unattributed usage: ${JSON.stringify(entry)}`);
 		piUI?.notify(`Claude bridge: Claude Code used ${formatTokens(unseen)} tokens in requests the bridge never saw. /claude-usage for details.`, "warning");
-	}
-	if (statusTotals.prompt > 0) {
-		const parts = [`Claude cache ${Math.round((statusTotals.cacheRead / statusTotals.prompt) * 100)}%`];
-		if (statusTotals.misses) parts.push(`${statusTotals.misses} miss${statusTotals.misses === 1 ? "" : "es"} (${formatTokens(statusTotals.lost)})`);
-		if (statusTotals.unseen) parts.push(`${formatTokens(statusTotals.unseen)} unseen`);
-		piUI?.setStatus("claude-bridge", parts.join(" · "));
 	}
 }
 

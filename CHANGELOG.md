@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Removed the Claude-only cache footer and its process-wide totals. The independent
+  OMP `cache-status` extension owns the provider-neutral conversation indicator.
+  Bridge cache-miss detection, warnings, usage reconciliation and `/claude-usage`
+  remain unchanged.
+
 ## [0.9.0] - 2026-11-02
 
 First release of the poog26 fork, renamed **omp-agent-sdk-bridge**. Targets Oh My Pi 18.15+
