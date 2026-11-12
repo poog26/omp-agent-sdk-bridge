@@ -12,6 +12,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Bridge cache-miss detection, warnings, usage reconciliation and `/claude-usage`
   remain unchanged.
 
+### Fixed
+- Tool input didn't stream: a `write`'s content appeared all at once after Claude finished
+  generating it, instead of filling in live like OMP's own providers. The guard that keeps
+  Claude Code from sending telemetry also stops it fetching the flag behind fine-grained tool
+  streaming, so the bridge now sets Claude Code's documented
+  `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING=1` (an explicit `0` still opts out).
+
 ## [0.9.0] - 2026-11-02
 
 First release of the poog26 fork, renamed **omp-agent-sdk-bridge**. Targets Oh My Pi 18.15+

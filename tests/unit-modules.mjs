@@ -54,13 +54,18 @@ test("guards always win, the client app is named, parent CC session markers are 
 	assert.equal(env.CLAUDE_CODE_SESSION_ID, undefined);
 });
 
+test("tool input streams as Claude writes it unless the user opted out", () => {
+	assert.equal(ccChildEnv({}, {}).CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING, "1");
+	assert.equal(ccChildEnv({}, { CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING: "0" }).CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING, "0");
+});
+
 // Compliance rule (see AGENTS.md): the bridge configures Claude Code only through
 // interfaces Anthropic documents. Every variable it sets must be on this list, each
 // checked against code.claude.com/docs/en/env-vars or the Agent SDK's own docs.
 const DOCUMENTED_CHILD_ENV = new Set([
 	"ENABLE_CLAUDEAI_MCP_SERVERS", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 	"CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS", "CLAUDE_AGENT_SDK_CLIENT_APP",
-	"CLAUDE_CODE_PROMPT_CACHE_TTL", "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL",
+	"CLAUDE_CODE_PROMPT_CACHE_TTL", "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING",
 ]);
 
 test("the bridge sets only Claude Code variables that Anthropic documents", () => {

@@ -99,5 +99,9 @@ export function ccChildEnv(opts: ChildEnvOptions = {}, parent: NodeJS.ProcessEnv
 		env.CLAUDE_CODE_PROMPT_CACHE_TTL = ttl;
 		env.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL = ttl;
 	}
+	// NONESSENTIAL_TRAFFIC also stops Claude Code fetching the feature flag that turns on
+	// fine-grained tool streaming, so tool input (a write's content) would arrive in one
+	// piece after Claude finished generating it. An explicit "0" from the user still opts out.
+	env.CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING ??= "1";
 	return { ...env, ...CC_CHILD_ENV };
 }
