@@ -18,6 +18,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Claude Code from sending telemetry also stops it fetching the flag behind fine-grained tool
   streaming, so the bridge now sets Claude Code's documented
   `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING=1` (an explicit `0` still opts out).
+- Tool calls still didn't preview while streaming once the input arrived live: the bridge
+  only parsed complete JSON, so a call's arguments stayed empty until Claude finished, and
+  it kept the raw JSON where OMP's renderers don't look. Tool blocks now carry it on OMP's
+  `setStreamingPartialJson` symbol and are parsed with `parseStreamingJsonThrottled`, the
+  same as OMP's Anthropic provider, so `write`, `eval`, `bash` and the rest fill in as they
+  stream. A contract check holds the bridge to OMP's own helpers.
 
 ## [0.9.0] - 2026-11-02
 

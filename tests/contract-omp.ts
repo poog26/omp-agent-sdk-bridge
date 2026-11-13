@@ -93,6 +93,29 @@ try {
 	check("nested OMP tool fields reach Claude's tool list",
 		JSON.stringify(listed.properties) === JSON.stringify(wire.properties) && JSON.stringify(listed.required) === JSON.stringify(wire.required),
 		`wire=${JSON.stringify(wire)}\n     listed=${JSON.stringify(listed)}`);
+
+	// OMP previews a tool call while it streams from the raw JSON on its own symbol;
+	// a bridge block without it rendered only once the call was complete.
+	const { getStreamingPartialJson } = await import("@oh-my-pi/pi-ai/utils/block-symbols");
+	const { __test } = await import("../src/index.ts");
+	const { QueryContext } = await import("../src/query-state.ts");
+	const { MCP_TOOL_PREFIX } = await import("../src/skills.ts");
+	const qc = new QueryContext();
+	const model = { id: "claude-haiku-5-5", api: "claude-bridge", provider: "claude-bridge" } as never;
+	qc.resetTurnState(model);
+	qc.currentPiStream = { push() {}, end() {} } as never;
+	const feed = (event: unknown) => __test.processStreamEvent({ type: "stream_event", event } as never, new Map(), model, qc);
+	feed({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: `${MCP_TOOL_PREFIX}write`, input: {} } });
+	feed({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"path\": \"a.txt\", \"content\": \"Rain ta" } });
+	const streaming = qc.turnBlocks[0];
+	check("a streaming tool call carries OMP's partial JSON and partial arguments",
+		getStreamingPartialJson(streaming) === "{\"path\": \"a.txt\", \"content\": \"Rain ta" && streaming.arguments.content === "Rain ta",
+		JSON.stringify({ partial: getStreamingPartialJson(streaming), args: streaming.arguments }));
+	feed({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "ps\"}" } });
+	feed({ type: "content_block_stop", index: 0 });
+	check("a finished tool call has complete arguments and no partial JSON",
+		getStreamingPartialJson(streaming) === undefined && streaming.arguments.content === "Rain taps" && streaming.name === "write",
+		JSON.stringify(streaming));
 } catch (e) {
 	check("contract run", false, String((e as Error)?.stack ?? e));
 }

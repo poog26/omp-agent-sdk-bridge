@@ -5,7 +5,8 @@ import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-c
 import { createSdkMcpServer, query, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { Text } from "@oh-my-pi/pi-tui";
-import { getAgentDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
+import { clearStreamingPartialJson, getStreamingPartialJson, kStreamingLastParseLen, setStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
 import { extendCleanSession as _extendCleanSession, sessionFileBytes, sessionPath } from "./session-extend.js";
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
@@ -916,6 +917,7 @@ export const __test = {
 		return sessions.get(key) ?? null;
 	},
 	syncSharedSession,
+	processStreamEvent,
 };
 
 // --- Provider helpers: tool name mapping ---
@@ -1156,12 +1158,16 @@ function processStreamEvent(
 		} else if (event.content_block?.type === "tool_use") {
 			c.turnSawToolCall = true;
 			c.turnToolCallIds.push(event.content_block.id);
-			c.turnBlocks.push({
+			// The raw JSON rides on OMP's own symbol, as its native providers do: OMP's tool
+			// renderers read it to preview a call (a write's content) while it streams.
+			const toolBlock = {
 				type: "toolCall", id: event.content_block.id,
 				name: mapToolName(event.content_block.name, customToolNameToPi),
 				arguments: (event.content_block.input as Record<string, unknown>) ?? {},
-				partialJson: "", index: event.index,
-			});
+				index: event.index,
+			};
+			setStreamingPartialJson(toolBlock, "");
+			c.turnBlocks.push(toolBlock);
 			c.currentPiStream!.push({ type: "toolcall_start", contentIndex: c.turnBlocks.length - 1, partial: c.turnOutput });
 		} else {
 			debug("processStreamEvent: unhandled content_block_start type", event.content_block?.type);
@@ -1180,8 +1186,13 @@ function processStreamEvent(
 			block.thinking += event.delta.thinking;
 			c.currentPiStream!.push({ type: "thinking_delta", contentIndex: index, delta: event.delta.thinking, partial: c.turnOutput });
 		} else if (event.delta?.type === "input_json_delta" && block.type === "toolCall") {
-			block.partialJson += event.delta.partial_json;
-			block.arguments = parsePartialJson(block.partialJson, block.arguments);
+			const partialJson = (getStreamingPartialJson(block) ?? "") + event.delta.partial_json;
+			setStreamingPartialJson(block, partialJson);
+			const parsed = parseStreamingJsonThrottled(partialJson, block[kStreamingLastParseLen] ?? 0);
+			if (parsed) {
+				block.arguments = mapToolArgs(block.name, parsed.value);
+				block[kStreamingLastParseLen] = parsed.parsedLen;
+			}
 			c.currentPiStream!.push({ type: "toolcall_delta", contentIndex: index, delta: event.delta.partial_json, partial: c.turnOutput });
 		} else if (event.delta?.type === "signature_delta" && block.type === "thinking") {
 			block.thinkingSignature = (block.thinkingSignature ?? "") + event.delta.signature;
@@ -1203,9 +1214,9 @@ function processStreamEvent(
 		} else if (block.type === "toolCall") {
 			c.turnSawToolCall = true;
 			block.arguments = mapToolArgs(
-				block.name, parsePartialJson(block.partialJson, block.arguments),
+				block.name, parsePartialJson(getStreamingPartialJson(block) ?? "", block.arguments),
 			);
-			delete block.partialJson;
+			clearStreamingPartialJson(block);
 			c.currentPiStream!.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: c.turnOutput });
 		}
 		return;
