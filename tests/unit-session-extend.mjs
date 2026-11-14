@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { extendCleanSession, sessionFileBytes, sessionPath } from "../src/session-extend.ts";
+import { convertPiMessages } from "../src/convert.ts";
 
 // A throwaway Claude config dir; sessionPath reads CLAUDE_CONFIG_DIR at call time.
 const ccDir = mkdtempSync(join(tmpdir(), "ocb-cc-"));
@@ -48,7 +49,7 @@ test("after a completed query, CC's own records stay byte-for-byte and OMP's new
 
 test("after an abort, the bytes measured at the turn's start are kept in a fresh session", () => {
 	writeCc(JSON.stringify({ type: "user", sessionId: sid, uuid: "late", message: { role: "user", content: "[Request interrupted by user]" } }) + "\n");
-	const state = { sessionId: sid, cursor: 2, cleanBytes: Buffer.byteLength(ccText), needsRebuild: true, forceRotate: true };
+	const state = { sessionId: sid, cursor: 2, cleanCursor: 2, cleanBytes: Buffer.byteLength(ccText), needsRebuild: true, forceRotate: true };
 	const result = extendCleanSession(state, [...history, omp("assistant", "")], cwd, importTail);
 	assert.notEqual(result.sessionId, sid, "an orphan writer may still flush to the old id");
 	const text = readFileSync(sessionPath(result.sessionId, cwd), "utf-8");
@@ -61,7 +62,7 @@ test("after an abort, the bytes measured at the turn's start are kept in a fresh
 
 test("a failed query without rotation keeps the prefix under the same id", () => {
 	writeCc("garbage line from a half-written record");
-	const result = extendCleanSession({ sessionId: sid, cursor: 2, cleanBytes: Buffer.byteLength(ccText), needsRebuild: true }, history, cwd, importTail);
+	const result = extendCleanSession({ sessionId: sid, cursor: 2, cleanCursor: 2, cleanBytes: Buffer.byteLength(ccText), needsRebuild: true }, history, cwd, importTail);
 	assert.equal(result.sessionId, sid);
 	assert.ok(!readFileSync(sessionPath(sid, cwd), "utf-8").includes("garbage"));
 });
@@ -70,4 +71,40 @@ test("without a clean prefix (history rewritten) the caller rebuilds from OMP", 
 	writeCc();
 	assert.equal(extendCleanSession({ sessionId: sid, cursor: 2, needsRebuild: true }, history, cwd, importTail), undefined);
 	assert.equal(extendCleanSession({ sessionId: sid, cursor: 2, cleanBytes: 0, needsRebuild: true }, history, cwd, importTail), undefined);
+});
+
+for (const forceRotate of [false, true]) {
+	test(`recovery after ${forceRotate ? "abort" : "error"} replays from the snapshot cursor after tool results advance the live cursor`, () => {
+		writeCc("incomplete record after the snapshot");
+		const messages = [
+			{ role: "user", content: "first question" },
+			{ role: "assistant", content: [{ type: "text", text: "first answer" }] },
+			{ role: "user", content: "current question" },
+			{ role: "assistant", content: [{ type: "toolCall", id: "call:current", name: "read", arguments: { path: "current.txt" } }] },
+			{ role: "toolResult", toolCallId: "call:current", content: [{ type: "text", text: "current tool result" }], isError: false },
+			{ role: "assistant", content: [{ type: "text", text: "partial current answer" }] },
+		];
+		const result = extendCleanSession({
+			sessionId: sid, cursor: 5, cleanCursor: 2, cleanBytes: Buffer.byteLength(ccText), needsRebuild: true, forceRotate,
+		}, messages, cwd, (session, tail) => session.importMessages(convertPiMessages(tail).anthropicMessages));
+		assert.equal(result.convertedMessages, 4);
+		assert.equal(result.keptRecords, ccRecords.length);
+		const records = readFileSync(sessionPath(result.sessionId, cwd), "utf-8").trim().split("\n").map(JSON.parse);
+		assert.deepEqual(records.slice(ccRecords.length).map(({ message: { role, content } }) => ({ role, content })), [
+			{ role: "user", content: "current question" },
+			{ role: "assistant", content: [{ type: "tool_use", id: "call_current", name: "Read", input: { path: "current.txt" } }] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "call_current", content: "current tool result" }] },
+			{ role: "assistant", content: [{ type: "text", text: "partial current answer" }] },
+		]);
+	});
+}
+
+test("snapshot bytes without a valid associated cursor require a full rebuild", () => {
+	const path = writeCc();
+	for (const cleanCursor of [undefined, -1, 1.5, history.length + 1, NaN]) {
+		assert.equal(extendCleanSession({
+			sessionId: sid, cursor: 2, cleanCursor, cleanBytes: Buffer.byteLength(ccText), needsRebuild: true,
+		}, history, cwd, importTail), undefined);
+		assert.equal(readFileSync(path, "utf-8"), ccText);
+	}
 });

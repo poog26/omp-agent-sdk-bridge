@@ -142,4 +142,87 @@ describe("makePromptStream", () => {
 		await assert.rejects(ps.push(userMessage([{ type: "text", text: "after" }])), /CLI exited with code 1/);
 		await pumping;
 	});
+
+	it("rejects the in-flight ack and every queued ack on consumer break", async () => {
+		const ps = makePromptStream();
+		const acks = ["inflight", "queued one", "queued two"].map((value) => ps.push(userMessage([{ type: "text", text: value }])));
+		const settled = Promise.allSettled(acks);
+		const written = [];
+		for await (const msg of ps.stream) {
+			written.push(text(msg));
+			break;
+		}
+		assert.deepEqual(written, ["inflight"]);
+		for (const result of await settled) {
+			assert.equal(result.status, "rejected");
+			assert.match(result.reason.message, /closed/);
+		}
+	});
+
+	it("rejects every ack when the transport throws during a write", async () => {
+		const ps = makePromptStream();
+		const acks = ["inflight", "queued one", "queued two"].map((value) => ps.push(userMessage([{ type: "text", text: value }])));
+		const settled = Promise.allSettled(acks);
+		await assert.rejects(pump(ps.stream, () => { throw new Error("transport failed"); }), /transport failed/);
+		for (const result of await settled) {
+			assert.equal(result.status, "rejected");
+			assert.match(result.reason.message, /closed/);
+		}
+	});
+
+	it("return before the first pull rejects all queued acks", async () => {
+		const ps = makePromptStream();
+		const settled = Promise.allSettled(["one", "two"].map((value) => ps.push(userMessage([{ type: "text", text: value }]))));
+		assert.deepEqual(await ps.stream.return(), { value: undefined, done: true });
+		for (const result of await settled) {
+			assert.equal(result.status, "rejected");
+			assert.match(result.reason.message, /closed/);
+		}
+		await assert.rejects(ps.push(userMessage("later")), /closed/);
+	});
+
+	it("return wakes a consumer parked waiting for input", async () => {
+		const ps = makePromptStream();
+		const waiting = ps.stream.next();
+		const closing = ps.stream.return();
+		assert.deepEqual(await waiting, { value: undefined, done: true });
+		assert.deepEqual(await closing, { value: undefined, done: true });
+		await assert.rejects(ps.push(userMessage("later")), /closed/);
+	});
+
+	it("end drains all already queued acks before closing", async () => {
+		const ps = makePromptStream();
+		const acks = ["one", "two", "three"].map((value) => ps.push(userMessage([{ type: "text", text: value }])));
+		ps.end();
+		const written = [];
+		await pump(ps.stream, (msg) => { written.push(text(msg)); });
+		await Promise.all(acks);
+		assert.deepEqual(written, ["one", "two", "three"]);
+	});
+
+	it("fail rejects all queued and in-flight acks without waiting for another pull", async () => {
+		const ps = makePromptStream();
+		const acks = ["inflight", "one", "two"].map((value) => ps.push(userMessage([{ type: "text", text: value }])));
+		const settled = Promise.allSettled(acks);
+		assert.equal(text((await ps.stream.next()).value), "inflight");
+		const failure = new Error("CLI failed");
+		ps.end();
+		ps.fail(failure);
+		for (const result of await settled) {
+			assert.equal(result.status, "rejected");
+			assert.equal(result.reason, failure);
+		}
+		await assert.rejects(ps.stream.next(), (error) => error === failure);
+	});
+
+	it("throw before the first pull rejects queued acks and closes future pushes", async () => {
+		const ps = makePromptStream();
+		const settled = Promise.allSettled(["one", "two"].map((value) => ps.push(userMessage([{ type: "text", text: value }]))));
+		await assert.rejects(ps.stream.throw(new Error("consumer failed")), /consumer failed/);
+		for (const result of await settled) {
+			assert.equal(result.status, "rejected");
+			assert.match(result.reason.message, /closed/);
+		}
+		await assert.rejects(ps.push(userMessage("later")), /closed/);
+	});
 });

@@ -1,8 +1,8 @@
 // Rate-limit and Extra Usage notices from the SDK's rate_limit_event.
 //
 // Units (SDKRateLimitInfo): `utilization` is a fraction 0..1, `resetsAt` is Unix
-// seconds. The SDK emits one event per request, so warnings are de-duplicated by
-// 5% step and only re-armed when usage drops back to "allowed".
+// seconds. Warnings are de-duplicated by 5% step within each window/reset period
+// and re-armed when that window drops back to "allowed".
 
 import { PROVIDER_ID } from "./convert.js";
 
@@ -23,13 +23,18 @@ export interface RateLimitNotice {
 	level: "info" | "warning" | "error";
 }
 
-export interface RateLimitTracker {
+interface WindowNoticeState {
+	resetsAt?: number;
 	lastWarnStep: number | null;
 	extraUsageNotified: boolean;
 }
 
+export interface RateLimitTracker {
+	windows: Map<string, WindowNoticeState>;
+}
+
 export function newRateLimitTracker(): RateLimitTracker {
-	return { lastWarnStep: null, extraUsageNotified: false };
+	return { windows: new Map() };
 }
 
 const WINDOW_LABELS: Record<string, string> = {
@@ -68,30 +73,41 @@ export function rateLimitNotice(
 	// A parked query or background role can report after the user switches models.
 	// Do not consume warning de-duplication state for a notice the user won't see.
 	if (!info || activeProvider !== PROVIDER_ID) return null;
+	// An unqualified "allowed" event reports a return under the plan overall.
+	if (info.status === "allowed" && !isExtraUsage(info) && !info.rateLimitType) {
+		tracker.windows.clear();
+		return null;
+	}
+	const key = info.rateLimitType ?? "";
+	let state = tracker.windows.get(key);
+	if (!state || (info.resetsAt !== undefined && info.resetsAt !== state.resetsAt)) {
+		state = { resetsAt: info.resetsAt, lastWarnStep: null, extraUsageNotified: false };
+		tracker.windows.set(key, state);
+	}
 	const window = windowLabel(info.rateLimitType);
 	if (isExtraUsage(info)) {
-		if (tracker.extraUsageNotified) return null;
-		tracker.extraUsageNotified = true;
+		if (state.extraUsageNotified) return null;
+		state.extraUsageNotified = true;
 		return {
 			message: `Claude ${window} limit reached — requests are now billed to Extra Usage (plan limit resets ${formatResetsAt(info.resetsAt)})`,
 			level: "warning",
 		};
 	}
 	if (info.status === "rejected") {
-		tracker.lastWarnStep = null;
+		state.lastWarnStep = null;
 		return { message: `Claude ${window} limit reached — resets ${formatResetsAt(info.resetsAt)}`, level: "error" };
 	}
 	if (info.status === "allowed") {
-		tracker.lastWarnStep = null;
-		tracker.extraUsageNotified = false;
+		state.lastWarnStep = null;
+		state.extraUsageNotified = false;
 		return null;
 	}
 	if (info.status === "allowed_warning") {
 		const fraction = info.utilization ?? 0;
 		if (fraction < threshold) return null;
 		const step = Math.floor((fraction * 100) / 5);
-		if (tracker.lastWarnStep !== null && step <= tracker.lastWarnStep) return null;
-		tracker.lastWarnStep = step;
+		if (state.lastWarnStep !== null && step <= state.lastWarnStep) return null;
+		state.lastWarnStep = step;
 		return {
 			message: `Claude ${window} usage at ${Math.round(fraction * 100)}% — resets ${formatResetsAt(info.resetsAt)}`,
 			level: "warning",

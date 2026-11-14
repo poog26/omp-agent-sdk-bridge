@@ -130,3 +130,26 @@ test("resolveModel: family shortcut picks the newest; exact id wins", () => {
 	assert.equal(resolveModel(MODELS, "claude-opus-4-6").id, "claude-opus-4-6");
 	assert.equal(resolveModel(MODELS, "nope"), undefined);
 });
+
+test("resolveModel preserves an explicit window through the runtime call used by AskClaude", () => {
+	for (const [input, expectedId, expectedRuntime] of [
+		["claude-opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]"],
+		["CLAUDE-OPUS-4-6-1M", "claude-opus-4-6-1m", "claude-opus-4-6[1m]"],
+		["claude-opus-5-5-200k", "claude-opus-5-5-200k", "claude-opus-5-5"],
+		["opus-200k", "claude-opus-5-5-200k", "claude-opus-5-5"],
+		["sonnet-1m", "claude-sonnet-5-5-1m", "claude-sonnet-5-5[1m]"],
+	]) {
+		const model = resolveModel(MODELS, input);
+		assert.equal(model.id, expectedId);
+		assert.equal(claudeCodeModelId(model, settings()), expectedRuntime);
+	}
+	assert.equal(resolveModel(MODELS, "not-a-model-1m"), undefined);
+	assert.ok(MODELS.every((m) => !m.id.endsWith("-200k") && !m.id.endsWith("-1m")), "catalog is not mutated");
+});
+
+test("resolveModel also accepts already-registered picker variants", () => {
+	const variants = buildVariantModels(MODELS, settings());
+	const model = resolveModel(variants, "claude-opus-4-6-1m");
+	assert.equal(model, variants.find((m) => m.id === "claude-opus-4-6-1m"));
+	assert.equal(claudeCodeModelId(model, settings()), "claude-opus-4-6[1m]");
+});

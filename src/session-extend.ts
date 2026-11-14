@@ -21,7 +21,9 @@ export interface CleanState {
 	sessionId: string;
 	/** OMP messages the file mirrors. */
 	cursor: number;
-	/** Bytes of the file that mirror priors[0..cursor) as CC wrote them, measured when a query started. */
+	/** OMP messages represented by cleanBytes; unlike cursor, this does not advance during a query. */
+	cleanCursor?: number;
+	/** Bytes of the file that mirror priors[0..cleanCursor) as CC wrote them. */
 	cleanBytes?: number;
 	/** A query completed: the whole file is clean, through the final assistant message after `cursor`. */
 	completed?: boolean;
@@ -57,6 +59,8 @@ export function extendCleanSession<M extends { role?: string }>(
 		// CC already wrote the final assistant message that follows `cursor`.
 		if (tail[0]?.role === "assistant") tail = tail.slice(1);
 	} else if (state.cleanBytes !== undefined && state.cleanBytes > 0) {
+		if (state.cleanCursor === undefined || !Number.isSafeInteger(state.cleanCursor) || state.cleanCursor < 0 || state.cleanCursor > priorMessages.length) return undefined;
+		tail = priorMessages.slice(state.cleanCursor);
 		const bytes = readFileSync(sessionPath(state.sessionId, cwd)).subarray(0, state.cleanBytes);
 		const end = bytes.lastIndexOf(0x0a);
 		if (end < 0) return undefined;

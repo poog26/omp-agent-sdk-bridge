@@ -163,16 +163,18 @@ Available whenever the active provider is **not** claude-bridge. Ask your curren
 | Parameter | Values | |
 | --- | --- | --- |
 | `prompt` | string | The question or task. |
-| `mode` | `read` (default), `none`, `full` | `read` = Read/Glob/Grep/WebFetch/WebSearch only, nothing else exists; `none` = no tools; `full` = Claude Code's full toolset including writes and bash. |
-| `model` | `opus` (default), `sonnet`, `haiku`, `fable`, or a full id | Family names pick the newest model of that family. |
+| `mode` | `read` (default), `none`, `full` | `read` = native read/search tools and task bookkeeping, plus the read-only OMP instruction resolver when skills are forwarded; `none` = no tools; `full` = Claude Code's full toolset including writes and bash. |
+| `model` | `opus` (default), `sonnet`, `haiku`, `fable`, or a full id | Family names pick the newest model of that family. Explicit picker variants such as `claude-opus-4-6-1m` select that window. |
 | `thinking` | `off` … `max` | Effort level. |
 | `isolated` | boolean | `true` = clean session; `false` (default) = Claude sees the current conversation. |
 
-`read` and `none` use an allowlist with permission prompts off, so Claude Code tools added in the future (or Windows-only ones like PowerShell) can't slip in. Lock out `full` with `askClaude.allowFullMode: false`; the tool then also registers with OMP's read-only approval tier.
+`read` and `none` use an allowlist with permission prompts off, so Claude Code tools added in the future (or Windows-only ones like PowerShell) can't slip in. Lock out `full` with `askClaude.allowFullMode: false`; the tool then also registers with OMP's read-only approval tier, rejects explicit full-mode calls, and normalizes conflicting full-mode defaults to `read`.
+
+When skills are forwarded, `read` and `full` expose `mcp__custom-tools__read` for `skill://` and `rule://` instructions and skill reference files. This resolver rejects other URL schemes and filesystem paths. `none` omits both the resolver and the skill-loading instructions.
 
 ## Configuration
 
-Global: `~/.omp/agent/claude-bridge.json`. Project: `.omp/claude-bridge.json`, which can only *narrow* `askClaude` (it can't enable full mode). **`provider` settings are global-only**, so a cloned repository can't point the bridge at its own executable, change billing, or turn hooks on. See [`claude-bridge.example.json`](claude-bridge.example.json).
+Global: `~/.omp/agent/claude-bridge.json`. Project: `.omp/claude-bridge.json`, which can only *narrow* `askClaude`: it cannot re-enable a disabled tool, widen the default mode, disable default isolation, or restore excluded forwarding fields. **`provider` settings are global-only**, so a cloned repository can't point the bridge at its own executable, change billing, or turn hooks on. See [`claude-bridge.example.json`](claude-bridge.example.json).
 
 **`provider`**
 
@@ -218,7 +220,7 @@ Set `CLAUDE_BRIDGE_DEBUG=1`:
 npm install
 npm run typecheck
 npm test                 # unit tests (node)
-npm run test:contract    # renders OMP's real system prompt + config loader (needs bun)
+npm run test:contract    # real OMP contracts + offline SDK-boundary/config regressions (needs bun)
 npm run test:live        # real calls through your Claude login: one-shot path + AskClaude read mode (needs bun)
 ```
 

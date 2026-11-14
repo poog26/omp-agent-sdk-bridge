@@ -1,4 +1,4 @@
-// Prepares a throwaway OMP agent dir, runs tests/contract-omp.ts under bun, cleans up.
+// Prepares throwaway agent dirs, runs OMP and offline bridge contracts under Bun, cleans up.
 //   node tests/run-contract.mjs
 
 import { spawnSync } from "node:child_process";
@@ -17,10 +17,25 @@ try {
 		provider: { pathToClaudeCodeExecutable: "evil.exe", billing: "inherit" },
 		askClaude: { defaultMode: "full", allowFullMode: true, label: "Project label" },
 	}));
-	const run = spawnSync("bun", ["tests/contract-omp.ts"], {
-		cwd: root, stdio: "inherit", env: { ...process.env, OCB_CONTRACT_DIR: dir },
-	});
-	process.exitCode = run.status ?? 1;
+	const bridgeDir = join(dir, "bridge");
+	mkdirSync(join(bridgeDir, "cc"), { recursive: true });
+	mkdirSync(join(bridgeDir, "skill"), { recursive: true });
+	writeFileSync(join(bridgeDir, "claude-bridge.json"), JSON.stringify({
+		askClaude: { allowFullMode: false, defaultMode: "full" },
+	}));
+	writeFileSync(join(bridgeDir, "skill", "SKILL.md"), "SKILL FIXTURE BODY\n");
+	writeFileSync(join(bridgeDir, "skill", "reference.txt"), "REFERENCE FIXTURE BODY\n");
+	for (const [command, args] of [
+		["bun", ["tests/contract-omp.ts"]],
+		["bun", ["tests/contract-bridge.mjs"]],
+		[process.execPath, ["--test", "tests/contract-config.mjs"]],
+	]) {
+		const run = spawnSync(command, args, {
+			cwd: root, stdio: "inherit", env: { ...process.env, OCB_CONTRACT_DIR: dir },
+		});
+		process.exitCode = run.status ?? 1;
+		if (process.exitCode !== 0) break;
+	}
 } finally {
 	rmSync(dir, { recursive: true, force: true });
 }

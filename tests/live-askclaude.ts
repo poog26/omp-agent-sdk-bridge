@@ -3,8 +3,9 @@
 //
 //   bun tests/live-askclaude.ts
 
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import extension from "../src/index.ts";
 
 const tools: Record<string, any> = {};
 const stubPi = {
@@ -13,7 +14,9 @@ const stubPi = {
 	registerCommand() {},
 	registerProvider() {},
 };
-(await import("../src/index.ts")).default(stubPi as any);
+// This harness intentionally supplies only the extension methods it exercises.
+const extensionApi = stubPi as unknown as Parameters<typeof extension>[0];
+await extension(extensionApi);
 
 const askClaude = tools.AskClaude;
 if (!askClaude) {
@@ -22,6 +25,7 @@ if (!askClaude) {
 }
 
 const cwd = process.cwd();
+const expectedVersion: string = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")).version;
 const marker = join(cwd, "ASKCLAUDE_SHOULD_NOT_EXIST.txt");
 rmSync(marker, { force: true });
 const ctx = { model: undefined, cwd, getSystemPrompt: () => [], sessionManager: { getBranch: () => [] } };
@@ -37,7 +41,8 @@ const text = result.content?.[0]?.text ?? "";
 console.log(text.slice(0, 1200));
 const createdFile = existsSync(marker);
 rmSync(marker, { force: true });
-const ok = !result.details?.error && /0\.9\.0/.test(text) && !createdFile;
-console.log(`\nversion reported: ${/0\.9\.0/.test(text)}  file created: ${createdFile}`);
+const versionReported = text.includes(expectedVersion);
+const ok = !result.details?.error && versionReported && !createdFile;
+console.log(`\nversion reported: ${versionReported}  file created: ${createdFile}`);
 console.log(ok ? "ok   read mode can read but not write or execute" : "FAIL read-mode check");
 process.exit(ok ? 0 : 1);

@@ -92,17 +92,30 @@ export function recordRateLimit(state: UsageState, info: ReportedRateLimit | und
 	return changed;
 }
 
-/** Record Claude Code's account label. Only a claude.ai subscription login has a plan name. */
+/**
+ * Record Claude Code's account label. A different known email invalidates old
+ * account-bound windows, but observations from the query requesting accountInfo
+ * may have arrived first and must survive its asynchronous response.
+ */
 export function recordAccount(
 	state: UsageState,
 	info: { email?: string; subscriptionType?: string; apiProvider?: string } | undefined,
+	observationsSince?: number,
 ): boolean {
 	if (!info || (info.apiProvider && info.apiProvider !== "firstParty")) return false;
+	const changedIdentity = !!state.account?.email && !!info.email
+		&& state.account.email.toLowerCase() !== info.email.toLowerCase();
 	const next = {
+		...(!changedIdentity ? state.account : {}),
 		...(info.email ? { email: info.email } : {}),
 		...(info.subscriptionType ? { subscriptionType: info.subscriptionType } : {}),
 	};
 	if (JSON.stringify(next) === JSON.stringify(state.account ?? {})) return false;
+	if (changedIdentity) {
+		for (const [type, window] of Object.entries(state.windows)) {
+			if (observationsSince === undefined || window.seenAt < observationsSince) delete state.windows[type];
+		}
+	}
 	state.account = next;
 	return true;
 }

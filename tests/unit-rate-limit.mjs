@@ -75,3 +75,30 @@ test("hidden background warnings do not suppress later visible warnings or the b
 		assert.equal(rateLimitNotice(info, tracker, "claude-bridge"), null);
 	}
 });
+
+test("warning steps are independent for every window and reset period", () => {
+	const tracker = newRateLimitTracker();
+	const fiveHour = { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.95, resetsAt: inAnHour };
+	const weekly = { ...fiveHour, rateLimitType: "seven_day", utilization: 0.81 };
+	assert.ok(rateLimitNotice(fiveHour, tracker, "claude-bridge"));
+	assert.ok(rateLimitNotice(weekly, tracker, "claude-bridge"), "weekly warning must not inherit 5-hour step");
+	assert.equal(rateLimitNotice(weekly, tracker, "claude-bridge"), null);
+	rateLimitNotice({ status: "allowed", rateLimitType: "five_hour", resetsAt: inAnHour }, tracker, "claude-bridge");
+	assert.equal(rateLimitNotice(weekly, tracker, "claude-bridge"), null, "another window returning to allowed does not re-arm weekly");
+	assert.ok(rateLimitNotice({ ...weekly, resetsAt: inAnHour + 604800 }, tracker, "claude-bridge"), "a new weekly period re-arms without an allowed event");
+});
+
+test("Extra Usage notices are independent for every window and reset period", () => {
+	const tracker = newRateLimitTracker();
+	const fiveHour = { status: "allowed", rateLimitType: "five_hour", isUsingOverage: true, resetsAt: inAnHour };
+	const weekly = { ...fiveHour, rateLimitType: "seven_day" };
+	assert.match(rateLimitNotice(fiveHour, tracker, "claude-bridge").message, /billed to Extra Usage/);
+	assert.match(rateLimitNotice(weekly, tracker, "claude-bridge").message, /billed to Extra Usage/);
+	assert.equal(rateLimitNotice(weekly, tracker, "claude-bridge"), null);
+	rateLimitNotice({ status: "allowed", rateLimitType: "five_hour", resetsAt: inAnHour }, tracker, "claude-bridge");
+	assert.equal(rateLimitNotice(weekly, tracker, "claude-bridge"), null);
+	const nextPeriod = { ...weekly, resetsAt: inAnHour + 604800 };
+	assert.equal(rateLimitNotice(nextPeriod, tracker, "openai-codex"), null);
+	assert.ok(rateLimitNotice(nextPeriod, tracker, "claude-bridge"), "hidden events do not consume the new period");
+	assert.equal(rateLimitNotice(nextPeriod, tracker, "claude-bridge"), null);
+});

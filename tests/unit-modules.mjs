@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { authRouteNotice, ccChildEnv } from "../src/child-env.ts";
 import { effortFor, planThinking } from "../src/effort.ts";
-import { askClaudeToolPolicy, READ_ONLY_TOOLS } from "../src/askclaude-tools.ts";
+import { askClaudeToolPolicy, resolveAskClaudeMode, READ_ONLY_TOOLS } from "../src/askclaude-tools.ts";
 import { composeAppend, extractOmpPromptParts, isAgentPrompt } from "../src/omp-prompt.ts";
 import { convertPiMessages } from "../src/convert.ts";
 import { shortPath } from "../src/askclaude-ui.ts";
@@ -117,6 +117,21 @@ test("AskClaude read mode is an allowlist with no command execution and no bypas
 	const full = askClaudeToolPolicy("full");
 	assert.equal(full.permissionMode, "bypassPermissions");
 	assert.ok(full.disallowedTools.includes("AskUserQuestion"));
+});
+
+test("AskClaude execution resolves defaults and rejects forbidden full access", () => {
+	assert.equal(resolveAskClaudeMode(undefined), "read");
+	assert.equal(resolveAskClaudeMode(undefined, { defaultMode: "none" }), "none");
+	assert.equal(resolveAskClaudeMode("read", { defaultMode: "full", allowFullMode: false }), "read");
+	assert.equal(resolveAskClaudeMode("none", { allowFullMode: false }), "none");
+	assert.equal(resolveAskClaudeMode("full", { allowFullMode: true }), "full");
+	assert.equal(resolveAskClaudeMode(undefined, { defaultMode: "full" }), "full");
+	for (const mode of [undefined, "full"]) {
+		assert.throws(
+			() => resolveAskClaudeMode(mode, { defaultMode: "full", allowFullMode: false }),
+			/AskClaude full mode is disabled by allowFullMode/,
+		);
+	}
 });
 
 // --- OMP prompt projection (synthetic; the real renderer is covered by tests/contract-omp-prompt.ts) ---
