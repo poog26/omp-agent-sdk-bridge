@@ -5,6 +5,8 @@
 //
 //   bun tests/live-oneshot.ts [model]      (default claude-haiku-5-5)
 
+import extension from "../src/index.ts";
+
 const registered: { streamSimple?: (model: any, context: any, options?: any) => any; models?: any[] } = {};
 const stubPi = {
 	on() {},
@@ -13,8 +15,9 @@ const stubPi = {
 	registerProvider(_name: string, config: any) { Object.assign(registered, config); },
 };
 
-const extension = (await import("../src/index.ts")).default;
-extension(stubPi as any);
+// This harness intentionally supplies only the extension methods it exercises.
+const extensionApi = stubPi as unknown as Parameters<typeof extension>[0];
+await extension(extensionApi);
 
 const modelId = process.argv[2] ?? "claude-haiku-5-5";
 const model = registered.models?.find((m) => m.id === modelId);

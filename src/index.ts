@@ -28,7 +28,7 @@ import { composeAppend, extractOmpPromptParts, isAgentPrompt } from "./omp-promp
 import { ensurePersonaStyle, type PersonaStyle } from "./persona-style.js";
 import { authRouteNotice, ccChildEnv, promptCacheSeconds } from "./child-env.js";
 import { planThinking, type ThinkingPlan } from "./effort.js";
-import { askClaudeToolPolicy, type AskClaudeMode } from "./askclaude-tools.js";
+import { askClaudeToolPolicy, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-tools.js";
 import { jsonSchemaToZodSchema } from "./typebox-to-zod.js";
 import { applyClaudeUsage, type UsageTarget } from "./usage.js";
 import { subscriptionWarmingAction } from "./cache-warming.js";
@@ -36,6 +36,7 @@ import { buildUsageReport, loadUsageState, recordAccount, recordRateLimit, saveU
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { explainClaudeError, isExtraUsage, newRateLimitTracker, rateLimitNotice, type RateLimitInfo } from "./rate-limit.js";
 import { QueryMeter, appendLedger, detectMiss, formatReport, formatTokens, promptTokens, readLedger, summarizeLedger, tokensFromReport, type Fingerprint, type LedgerEntry, type PrevCall, type SyncPath } from "./usage-ledger.js";
+import { instructionReader, INSTRUCTION_READ_TOOL } from "./instruction-reader.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -251,7 +252,7 @@ interface SessionState {
 	// in-place rebuild (preserve UUID, deleteSession + createSession) is safe.
 	forceRotate?: boolean;
 	// Byte length of the leading part of CC's JSONL that mirrors OMP's
-	// priors[0..cursor) exactly as CC itself wrote it: measured when a query
+	// priors[0..cleanCursor) exactly as CC itself wrote it: measured when a query
 	// starts, so it stays valid after that query is aborted or fails. A rebuild
 	// keeps these bytes verbatim and converts only what follows. Rebuilding
 	// from OMP's history alone can't reproduce the records CC adds on its own
@@ -259,6 +260,7 @@ interface SessionState {
 	// rebuilt request diverged right after the system prompt and every cached
 	// message had to be written again. Unset after a history rewrite.
 	cleanBytes?: number;
+	cleanCursor?: number;
 	// Set when a query completed: the whole file is clean, including the final
 	// assistant message that OMP's next context carries after `cursor`.
 	completed?: boolean;
@@ -495,8 +497,17 @@ async function runCacheWarm(
 		});
 		if (options?.signal?.aborted) onAbort();
 		else options?.signal?.addEventListener("abort", onAbort, { once: true });
+		let receivedUsage = false;
 		for await (const message of sdkQuery) {
+			if (options?.signal?.aborted) throw new Error("Operation aborted");
+			if (message.type === "rate_limit_event") {
+				if (reportRateLimit(message.rate_limit_info) && !providerSettings.allowExtraUsage) {
+					throw new Error(EXTRA_USAGE_STOP_MESSAGE);
+				}
+				continue;
+			}
 			if (message.type === "stream_event" && message.event.type === "message_start") {
+				receivedUsage = true;
 				updateUsage(output, message.event.message.usage as unknown as Record<string, unknown>, model);
 				recordCall({ ts: Date.now(), kind: "warm", model: model.id, session: sessionKey.slice(-8), ...tokensFromReport(message.event.message.usage) }, sessionKey);
 				// OMP counts a refresh as landing on the entry only when it writes nothing,
@@ -512,8 +523,13 @@ async function runCacheWarm(
 				}
 				break;
 			}
-			if (message.type === "result") break;
+			if (message.type === "result") {
+				if (isErrorResult(message)) throw new Error(explainClaudeError(resultErrorText(message)));
+				break;
+			}
 		}
+		if (options?.signal?.aborted) throw new Error("Operation aborted");
+		if (!receivedUsage) throw new Error("Claude Code returned no cache-refresh usage");
 		debug(`cache-warm: session=${sessionId.slice(0, 8)} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite}`);
 		stream.push({ type: "start", partial: output });
 		stream.push({ type: "done", reason: "stop", message: output });
@@ -609,7 +625,11 @@ async function runOneShot(
 				resultUsage = message.usage as unknown as Record<string, unknown>;
 				if (resultUsage) recordCall({ ts: startedAt, kind: "one-shot", model: model.id, ...tokensFromReport(resultUsage) });
 			} else if (message.type === "rate_limit_event") {
-				reportRateLimit((message as any).rate_limit_info);
+				if (reportRateLimit(message.rate_limit_info) && !providerSettings.allowExtraUsage) {
+					errorText = EXTRA_USAGE_STOP_MESSAGE;
+					try { sdkQuery.close(); } catch {}
+					break;
+				}
 			}
 		}
 
@@ -817,7 +837,7 @@ function syncSharedSession(
 		if (missed.length === 0 || trailingAssistantOnly) {
 			slot.s = {
 				...slot.s, cursor: priorMessages.length, cwd,
-				cleanBytes: sessionFileBytes(slot.s.sessionId, cwd), completed: false,
+				cleanBytes: sessionFileBytes(slot.s.sessionId, cwd), cleanCursor: priorMessages.length, completed: false,
 			};
 			debug(`Case 3: ${trailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${slot.s.sessionId.slice(0, 8)}, cursor=${slot.s.cursor}`);
 			debug(`syncResult: path=reuse sessionId=${slot.s.sessionId} cursor=${slot.s.cursor}`);
@@ -871,7 +891,7 @@ function syncSharedSession(
 	convertAndImportMessages(session, priorMessages, customToolNameToSdk);
 	session.save();
 	verifyWrittenSession(session.jsonlPath, session.sessionId, session.messages.length, cwd);
-	slot.s = { sessionId: session.sessionId, cursor: priorMessages.length, cwd, cleanBytes: sessionFileBytes(session.sessionId, cwd) };
+	slot.s = { sessionId: session.sessionId, cursor: priorMessages.length, cwd, cleanBytes: sessionFileBytes(session.sessionId, cwd), cleanCursor: priorMessages.length };
 	if (previousSessionId === undefined) {
 		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.messages.length} records`);
 	} else if (preserveId) {
@@ -898,7 +918,7 @@ function extendCleanSession(
 		const result = _extendCleanSession(state, priorMessages, cwd, (session, tail) => convertAndImportMessages(session, tail, customToolNameToSdk));
 		if (!result) return undefined;
 		verifyWrittenSession(sessionPath(result.sessionId, cwd), result.sessionId, result.totalRecords, cwd);
-		slot.s = { sessionId: result.sessionId, cursor: priorMessages.length, cwd, cleanBytes: result.cleanBytes };
+		slot.s = { sessionId: result.sessionId, cursor: priorMessages.length, cwd, cleanBytes: result.cleanBytes, cleanCursor: priorMessages.length };
 		debug(`syncResult: path=extend sessionId=${result.sessionId.slice(0, 8)} kept=${result.keptRecords} records, converted ${result.convertedMessages} msgs${result.sessionId !== state.sessionId ? ` (rotated from ${state.sessionId.slice(0, 8)})` : ""}`);
 		return { sessionId: result.sessionId, path: "extend" };
 	} catch (e) {
@@ -1379,7 +1399,7 @@ async function consumeQuery(
 				processAssistantMessage(message, model, customToolNameToPi, queryCtx);
 				break;
 			case "result":
-				if (!queryCtx.turnSawStreamEvent) {
+				if (!queryCtx.turnSawStreamEvent && queryCtx.turnBlocks.length === 0) {
 					ensureTurnStarted(queryCtx);
 					const text = (message as any).result || "";
 					queryCtx.turnBlocks.push({ type: "text", text });
@@ -1680,6 +1700,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// 3. Start SDK query and claim it for this context
 	let wasAborted = false;
+	const accountObservationsSince = Date.now();
 	const sdkQuery = query({ prompt: promptStream.stream, options: queryOptions });
 	queryCtx.activeQuery = sdkQuery;
 	activeQueryContexts.add(queryCtx);
@@ -1688,7 +1709,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		accountInfoRequested = true;
 		void sdkQuery.accountInfo().then((info) => {
 			const state = loadUsageState(USAGE_STATE_PATH);
-			if (recordAccount(state, info)) saveUsageState(USAGE_STATE_PATH, state);
+			if (recordAccount(state, info, accountObservationsSince)) saveUsageState(USAGE_STATE_PATH, state);
 		}).catch((e) => debug("accountInfo failed", e));
 	}
 
@@ -1916,6 +1937,7 @@ async function promptAndWait(
 		thinking?: string;
 		isolated?: boolean;
 		context?: Context["messages"];
+		sessionId?: string;
 	},
 ): Promise<{ responseText: string; stopReason: string }> {
 	const cwd = options.cwd;
@@ -1929,12 +1951,18 @@ async function promptAndWait(
 	// a provider mirror would be stale), then forked so the run doesn't alter it.
 	let resumeSessionId: string | null = null;
 	if (!options.isolated && options.context?.length) {
+		if (!options.sessionId) throw new Error("AskClaude shared context requires an OMP session identity");
 		const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
-		resumeSessionId = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, cliModel, ASKCLAUDE_SESSION_KEY).sessionId;
+		const sessionKey = `askclaude:${options.sessionId}`;
+		resumeSessionId = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, cliModel, sessionKey).sessionId;
 	}
 
 	const policy = askClaudeToolPolicy(mode);
-	const append = composeAppend(extractOmpPromptParts(options.systemPrompt), { personality: false, ...options.forward });
+	const forward = { personality: false, ...options.forward, ...(mode === "none" ? { skills: false } : {}) };
+	const promptParts = extractOmpPromptParts(options.systemPrompt);
+	const append = composeAppend(promptParts, forward);
+	const instructions = forward.skills !== false && promptParts.skillsAndRules
+		? instructionReader(cwd, signal) : undefined;
 	const thinking = planThinking((model ?? {}) as any, { reasoning: options.thinking });
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 	const extraArgs: Record<string, string | null> = { "strict-mcp-config": null, model: cliModel };
@@ -1953,7 +1981,8 @@ async function promptAndWait(
 			tools: policy.tools,
 			permissionMode: policy.permissionMode,
 			...(policy.permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
-			...(policy.allowedTools ? { allowedTools: policy.allowedTools } : {}),
+			...(policy.allowedTools ? { allowedTools: [...policy.allowedTools, ...(instructions ? [INSTRUCTION_READ_TOOL] : [])] } : {}),
+			...(instructions ? { mcpServers: { [MCP_SERVER_NAME]: instructions } } : {}),
 			...(policy.disallowedTools ? { disallowedTools: policy.disallowedTools } : {}),
 			includePartialMessages: true,
 			// Claude Code's own tools run here, so its git guidance stays on.
@@ -2047,7 +2076,6 @@ async function promptAndWait(
 	}
 }
 
-const ASKCLAUDE_SESSION_KEY = "askclaude";
 
 function forwardSettings(forward: ForwardSettings | undefined): ForwardSettings {
 	return { personality: true, skills: true, projectContext: true, appendText: true, ...forward };
@@ -2147,7 +2175,7 @@ export default async function (pi: ExtensionAPI) {
 	const markRebuild = (event: string) => {
 		for (const [key, state] of sessions) {
 			debug(`${event}: marking needsRebuild on ${key} (${state.sessionId.slice(0, 8)})`);
-			sessions.set(key, { ...state, needsRebuild: true, cleanBytes: undefined, completed: false });
+			sessions.set(key, { ...state, needsRebuild: true, cleanBytes: undefined, cleanCursor: undefined, completed: false });
 		}
 		// The next request's cache miss follows from the rewrite; the ledger says so.
 		for (const key of lastCalls.keys()) rewrittenSessions.add(key);
@@ -2325,7 +2353,15 @@ export default async function (pi: ExtensionAPI) {
 				}
 
 				const askParams = readAskClaudeParams(params, true);
-				const mode = askParams.mode ?? defaultMode;
+				let mode: AskClaudeMode;
+				try {
+					mode = resolveAskClaudeMode(askParams.mode, askConf);
+				} catch (error) {
+					return {
+						content: [{ type: "text" as const, text: errorMessage(error) }],
+						details: { error: true },
+					};
+				}
 				const isolated = askParams.isolated ?? defaultIsolated;
 				const toolCalls = new Map<string, ToolCallState>();
 				const start = Date.now();
@@ -2348,6 +2384,7 @@ export default async function (pi: ExtensionAPI) {
 						model: askParams.model ?? defaultModel,
 						thinking: askParams.thinking,
 						isolated,
+						sessionId: isolated ? undefined : ctx.sessionManager.getSessionId(),
 						context: isolated ? undefined : buildSessionContext(ctx.sessionManager.getBranch()).messages as Context["messages"],
 					});
 					clearInterval(progressInterval);

@@ -8,6 +8,18 @@
 
 export type AskClaudeMode = "read" | "none" | "full";
 
+/** Resolve the effective mode at execution, independently of schema validation. */
+export function resolveAskClaudeMode(
+	requestedMode: AskClaudeMode | undefined,
+	settings: { defaultMode?: AskClaudeMode; allowFullMode?: boolean } = {},
+): AskClaudeMode {
+	const mode = requestedMode ?? settings.defaultMode ?? "read";
+	if (mode === "full" && settings.allowFullMode === false) {
+		throw new Error("AskClaude full mode is disabled by allowFullMode");
+	}
+	return mode;
+}
+
 export interface AskClaudeToolPolicy {
 	/** Built-in tool set passed as `tools`. */
 	tools: string[] | { type: "preset"; preset: "claude_code" };

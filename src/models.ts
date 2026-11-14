@@ -214,11 +214,16 @@ export function resolveModel<T extends { id: string }>(models: T[], input: strin
 	const lower = input.toLowerCase();
 	const exact = models.find((m) => m.id === lower);
 	if (exact) return exact;
-	const candidates = models.filter((m) => m.id.includes(lower));
+	const { baseId, forced } = parseVariantId(lower);
+	const base = models.find((m) => m.id === baseId);
+	const candidates = base ? [base] : models.filter((m) => parseVariantId(m.id).baseId.includes(baseId));
 	if (!candidates.length) return undefined;
-	return candidates.reduce((best, m) => {
+	const match = candidates.reduce((best, m) => {
 		const [a, b] = [versionRank(m.id).tuple, versionRank(best.id).tuple];
 		const newer = a[0] !== b[0] ? a[0] > b[0] : a[1] > b[1];
 		return newer ? m : best;
 	});
+	// Keep the requested window on the returned model: callers resolve its runtime
+	// later, and returning the unsuffixed catalog entry would lose that choice.
+	return forced ? { ...match, id: `${parseVariantId(match.id).baseId}-${forced}` } : match;
 }

@@ -103,3 +103,37 @@ test("state round-trips through its file, and a missing or broken file reads as 
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("a true account change discards the previous account's windows", () => {
+	const state = emptyUsageState();
+	recordAccount(state, { email: "old@example.com", subscriptionType: "pro" });
+	recordRateLimit(state, { rateLimitType: "seven_day", utilization: 0.9 }, NOW);
+	assert.ok(recordAccount(state, { email: "new@example.com", subscriptionType: "max" }));
+	assert.deepEqual(state.windows, {});
+	assert.equal(buildUsageReport("claude-bridge", state, NOW), null);
+});
+
+test("delayed accountInfo keeps new query observations but drops the old account's other windows", () => {
+	const state = emptyUsageState();
+	recordAccount(state, { email: "old@example.com", subscriptionType: "pro" });
+	recordRateLimit(state, {
+		unifiedWindows: { five_hour: { utilization: 0.9 }, seven_day: { utilization: 0.8 } },
+	}, NOW - 1000);
+	const queryStartedAt = NOW;
+	recordRateLimit(state, { rateLimitType: "five_hour", utilization: 0.1 }, NOW + 1);
+	assert.ok(recordAccount(state, { email: "new@example.com", subscriptionType: "max" }, queryStartedAt));
+	const report = buildUsageReport("claude-bridge", state, NOW + 2);
+	assert.equal(report.metadata.email, "new@example.com (max)");
+	assert.deepEqual(report.limits.map((limit) => limit.label), ["5 hours"]);
+	assert.equal(report.limits[0].amount.usedFraction, 0.1);
+});
+
+test("initial labels, plan updates, email casing and partial accountInfo do not invalidate observations", () => {
+	const state = emptyUsageState();
+	recordRateLimit(state, { rateLimitType: "five_hour", utilization: 0.3 }, NOW);
+	recordAccount(state, { email: "me@example.com", subscriptionType: "pro" });
+	recordAccount(state, { email: "ME@example.com", subscriptionType: "max" });
+	recordAccount(state, { subscriptionType: "pro" });
+	assert.equal(state.account.email, "ME@example.com");
+	assert.equal(buildUsageReport("claude-bridge", state, NOW).limits[0].amount.usedFraction, 0.3);
+});

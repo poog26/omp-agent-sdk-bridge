@@ -11,6 +11,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   providers when a parked query or background Claude request reports a limit.
   Notices follow the currently selected model; usage recording and the Extra Usage
   billing guard remain active regardless of the selected provider.
+- AskClaude enforces `allowFullMode: false` at execution, including omitted modes
+  and conflicting defaults, so a read-approved call cannot enable full permissions.
+- Project configuration can only narrow global delegation, isolation, mode and
+  context-forwarding defaults; it cannot re-enable a globally disabled tool.
+- Recovery after an interrupted or failed tool-using turn replays from the message
+  boundary associated with the saved clean prefix, preserving the request and tool results.
+- Rebuilt history preserves image-bearing tool results. Abandoned prompt streams
+  reject all pending steering acknowledgements instead of leaving delivery suspended.
+- One-shot summaries and titles honor the Extra Usage stop policy. Cache refreshes
+  honor it too and propagate SDK failures or missing usage instead of reporting success.
+- Non-streamed assistant/result fallback emits answers once. Root-union tool schemas
+  retain overlapping property alternatives instead of advertising only the first branch.
+- AskClaude translates explicit context-window variant IDs to the corresponding
+  Claude Code runtime and can read forwarded OMP skills, references and rules through
+  a scheme-restricted read-only MCP tool. No-tool mode does not expose that resolver.
+- Usage warnings are deduplicated per window and reset period. Account changes
+  discard stale account-bound limits while retaining observations from the new query.
+- Live smoke tests await registration and check the current package version. Offline
+  contract checks now cover provider error/billing paths, delegation permissions,
+  instruction resolution and project configuration restrictions.
+- Shared AskClaude delegations use an OMP-session-specific mirror instead of a
+  project-wide singleton, preventing concurrent conversations from sharing history.
 
 ### Changed
 - The recommended install now tracks `main`, so `omp plugin upgrade omp-agent-sdk-bridge`

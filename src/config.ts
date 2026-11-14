@@ -136,6 +136,10 @@ export function validateConfig(config: Config, warn: (msg: string) => void = con
 		warn(`claude-bridge: invalid askClaude.defaultMode "${String(a.defaultMode)}", using "read"`);
 		delete a.defaultMode;
 	}
+	if (a.defaultMode === "full" && a.allowFullMode === false) {
+		warn(`claude-bridge: askClaude.defaultMode "full" is disabled by allowFullMode, using "read"`);
+		a.defaultMode = "read";
+	}
 	return { askClaude: a, provider: p };
 }
 
@@ -145,19 +149,33 @@ export function loadConfig(cwd: string, globalPath: string = globalConfigPath())
 	if (project.provider) {
 		console.error(`claude-bridge: ignoring "provider" in ${join(cwd, CONFIG_DIR_NAME, "claude-bridge.json")}; provider settings are global-only`);
 	}
+	const validatedGlobal = validateConfig(global);
+	const validatedProject = validateConfig({ askClaude: project.askClaude });
 	return validateConfig({
-		askClaude: { ...global.askClaude, ...narrowOnly(project.askClaude) },
-		provider: { ...global.provider },
+		askClaude: narrowOnly(validatedGlobal.askClaude, validatedProject.askClaude),
+		provider: validatedGlobal.provider,
 	});
 }
 
-/** A project may restrict AskClaude but not widen it into unattended write/bash access. */
-function narrowOnly(askClaude: Config["askClaude"]): Config["askClaude"] {
-	if (!askClaude) return {};
-	const { defaultMode, allowFullMode, ...rest } = askClaude;
-	return {
-		...rest,
-		...(defaultMode !== undefined && defaultMode !== "full" ? { defaultMode } : {}),
-		...(allowFullMode === false ? { allowFullMode } : {}),
-	};
+const MODE_ACCESS: Record<AskClaudeMode, number> = { none: 0, read: 1, full: 2 };
+const FORWARD_KEYS = ["personality", "skills", "projectContext", "appendText"] as const;
+
+/** Project settings may customize presentation or restrict access, never widen it. */
+function narrowOnly(global: Config["askClaude"], project: Config["askClaude"]): Config["askClaude"] {
+	const { enabled, defaultMode, allowFullMode, defaultIsolated, forward, ...rest } = project ?? {};
+	const merged = { ...global, ...rest };
+	if (enabled === false) merged.enabled = false;
+	if (defaultIsolated === true) merged.defaultIsolated = true;
+	if (allowFullMode === false) merged.allowFullMode = false;
+	if (defaultMode !== undefined && MODE_ACCESS[defaultMode] < MODE_ACCESS[global?.defaultMode ?? "read"]) {
+		merged.defaultMode = defaultMode;
+	}
+	if (global?.forward || forward) {
+		merged.forward = { ...global?.forward };
+		for (const key of FORWARD_KEYS) {
+			// Forwarding is default-on except personality; a project can only turn it off.
+			if (forward?.[key] === false) merged.forward[key] = false;
+		}
+	}
+	return merged;
 }

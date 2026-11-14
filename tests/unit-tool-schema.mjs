@@ -71,10 +71,33 @@ test("a root union of object branches is merged into one object", async () => {
 	});
 	assert.equal(listed.type, "object");
 	assert.equal(listed.anyOf, undefined);
-	assert.deepEqual(listed.properties.action, { enum: ["run", "close"] });
+	assert.deepEqual(listed.properties.action, { anyOf: [{ const: "run" }, { const: "close" }] });
 	assert.deepEqual(listed.properties.code, { type: "string" });
 	assert.deepEqual(listed.required, ["action"]);
 });
+
+for (const combinator of ["anyOf", "oneOf"]) {
+	test(`root ${combinator} preserves overlapping property alternatives without a root combinator`, async () => {
+		const alternatives = [
+			{ const: "auto", description: "automatic mode" },
+			{ type: "number", minimum: 1, maximum: 8 },
+			{ type: "array", items: { type: "string" }, minItems: 1 },
+			{ enum: ["fast", "slow"] },
+		];
+		const { listed, call, calls } = await serve({
+			[combinator]: alternatives.map((mode) => ({
+				type: "object", properties: { mode }, required: ["mode"],
+			})),
+		});
+		assert.equal(listed.type, "object");
+		assert.equal(listed.anyOf, undefined);
+		assert.equal(listed.oneOf, undefined);
+		assert.deepEqual(listed.properties.mode, { anyOf: alternatives });
+		assert.deepEqual(listed.required, ["mode"]);
+		for (const mode of ["auto", 3, ["x"], "fast"]) await call({ mode });
+		assert.deepEqual(calls, [{ mode: "auto" }, { mode: 3 }, { mode: ["x"] }, { mode: "fast" }]);
+	});
+}
 
 test("a schema without properties still lists an empty object", async () => {
 	const { listed } = await serve(undefined);

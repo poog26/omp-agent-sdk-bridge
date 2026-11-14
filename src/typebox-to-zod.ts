@@ -38,29 +38,28 @@ function asMeta(schema: JsonSchema): JsonSchema {
 /**
  * A root union of object branches (`{anyOf: [{properties…}, …]}`) has no top-level
  * properties, and the Messages API rejects combinators at the `input_schema` root.
- * Merge the branches into one object: each key keeps its first declaration, keys
- * that are `const` in several branches become an `enum`, and only keys required by
- * every branch stay required.
+ * Merge the branches into one object: overlapping keys keep every alternative,
+ * and only keys required by every branch stay required. Branch correlations are
+ * intentionally relaxed because the API requires a plain object at the root.
  */
 function mergeRootUnion(schema: JsonSchema): JsonSchema | null {
 	const branches = (schema.anyOf ?? schema.oneOf) as unknown;
 	if (!Array.isArray(branches) || !branches.length || !branches.every((b) => isRecord(b) && isRecord(b.properties))) return null;
-	const properties: Record<string, JsonSchema> = {};
-	const consts = new Map<string, unknown[]>();
+	const alternatives = new Map<string, JsonSchema[]>();
 	let required: Set<string> | null = null;
 	for (const branch of branches as JsonSchema[]) {
 		for (const [key, prop] of Object.entries(branch.properties as Record<string, unknown>)) {
 			if (!isRecord(prop)) continue;
-			if ("const" in prop) consts.set(key, [...(consts.get(key) ?? []), prop.const]);
-			properties[key] ??= prop;
+			const values = alternatives.get(key) ?? [];
+			values.push(prop);
+			alternatives.set(key, values);
 		}
 		const req = new Set(Array.isArray(branch.required) ? branch.required as string[] : []);
 		required = required ? new Set([...required].filter((k) => req.has(k))) : req;
 	}
-	for (const [key, values] of consts) {
-		if (values.length < 2) continue;
-		const { const: _c, ...rest } = properties[key];
-		properties[key] = { ...rest, enum: [...new Set(values)] };
+	const properties: Record<string, JsonSchema> = {};
+	for (const [key, values] of alternatives) {
+		properties[key] = values.length === 1 ? values[0] : { anyOf: values };
 	}
 	const { anyOf: _a, oneOf: _o, ...rest } = schema;
 	return { ...rest, type: "object", properties, required: [...(required ?? [])] };

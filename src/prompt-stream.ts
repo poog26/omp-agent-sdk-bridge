@@ -43,6 +43,15 @@ export function makePromptStream(): PromptStream {
 	let failure: Error | null = null;
 
 	const kick = () => { wake?.(); wake = null; };
+	const rejectPending = (error: Error) => {
+		for (const item of queue.splice(0)) item.reject(error);
+		inflight?.reject(error);
+	};
+	const close = () => {
+		done = true;
+		rejectPending(failure ?? new Error("prompt stream closed"));
+		kick();
+	};
 
 	async function* gen(): AsyncGenerator<SDKUserMessage> {
 		try {
@@ -66,15 +75,21 @@ export function makePromptStream(): PromptStream {
 				}
 			}
 		} finally {
-			// No consumer left to drain the queue, so nothing would ever settle a
-			// later push. Closing here keeps the reject-never-hang contract a
-			// property of this module rather than of every call site.
-			done = true;
+			// Once the consumer leaves, neither queued nor future pushes can be
+			// written. Settle them even if end() had already requested a drain.
+			close();
 		}
 	}
+	const stream = gen();
+	const returnStream = stream.return.bind(stream);
+	const throwStream = stream.throw.bind(stream);
+	// Native generator return/throw skip finally before the first next(), and
+	// queue behind a next() parked on wake. Close first to cover both cases.
+	stream.return = (value) => { close(); return returnStream(value); };
+	stream.throw = (error) => { close(); return throwStream(error); };
 
 	return {
-		stream: gen(),
+		stream,
 		push: (msg) => failure || done
 			? Promise.reject(failure ?? new Error("prompt stream closed"))
 			: new Promise<void>((resolve, reject) => { queue.push({ msg, resolve, reject }); kick(); }),
@@ -85,8 +100,7 @@ export function makePromptStream(): PromptStream {
 			// real cause its `catch` recorded.
 			if (failure) return;
 			failure = error;
-			queue.splice(0).forEach((item) => item.reject(error));
-			inflight?.reject(error);
+			rejectPending(error);
 			kick();
 		},
 	};
