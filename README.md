@@ -59,16 +59,6 @@ omp plugin upgrade omp-agent-sdk-bridge
 
 Restart OMP after upgrading to load the updated bridge. Updates are pulled when you run the upgrade command, not automatically in the background. See the [CHANGELOG](CHANGELOG.md) for changes.
 
-### Optional: pin a release
-
-If you want to stay on a specific version instead, install a tagged release from [Releases](https://github.com/poog26/omp-agent-sdk-bridge/releases):
-
-```bash
-omp plugin install git:github.com/poog26/omp-agent-sdk-bridge#v0.11.1
-```
-
-A pinned install stays on that release: `omp plugin upgrade` leaves it alone. To move to a newer release, run the install command again with its tag. To switch back to receiving updates from `main`, rerun the recommended unpinned install command above.
-
 ### Local checkout
 
 From a local checkout:
