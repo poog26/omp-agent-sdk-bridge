@@ -1589,6 +1589,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	queryCtx.pendingToolCalls.clear();
 	queryCtx.pendingResults.clear();
 	queryCtx.deferredUserMessages = [];
+	// These failures belong to one SDK query, not the reusable top-level context.
+	// Keep them across tool-result callbacks, but never carry them into a new query.
+	queryCtx.resultError = undefined;
+	queryCtx.extraUsageBlocked = false;
 	queryCtx.resetTurnState(model);
 	queryCtx.latestCursor = 0;
 

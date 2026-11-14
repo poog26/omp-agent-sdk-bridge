@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- A failed Claude query no longer poisons later queries in the same OMP process.
+  Fresh queries clear the previous SDK error and Extra Usage stop flag, so a
+  successful request after a limit reset does not fail with the old reset-time
+  message. Failures still remain intact across tool calls within the same query.
+
 ## [0.11.2] - 2026-11-14
 
 ### Fixed

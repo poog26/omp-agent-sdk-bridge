@@ -61,6 +61,29 @@ const fallback = await run([assistant("ONE ANSWER"), success("ONE ANSWER")]);
 assert.equal(fallback.content.map((block) => block.text ?? "").join(""), "ONE ANSWER");
 console.log("ok   completed assistant + result fallback emits the answer once");
 
+// A failed SDK query must not poison the next fresh query on the same top-level
+// context. In particular, an old reset-time message must not override a new answer.
+for (const error of [
+	"You've hit your session limit · resets 11:30pm (Europe/Budapest)",
+	"Temporary upstream error",
+]) {
+	const failed = await run([{ type: "result", subtype: "error_during_execution", is_error: true, errors: [error] }]);
+	assert.equal(failed.stopReason, "error");
+	assert.equal(failed.errorMessage, error);
+	const recovered = await run([assistant("NEW SUCCESSFUL ANSWER"), success("NEW SUCCESSFUL ANSWER")]);
+	assert.equal(recovered.stopReason, "stop", "an earlier query error must not override a new successful query");
+	assert.equal(recovered.errorMessage, undefined);
+	assert.equal(recovered.content.map((block) => block.text ?? "").join(""), "NEW SUCCESSFUL ANSWER");
+}
+const blockedTurn = await run([overage, assistant("must not continue"), success("must not continue")]);
+assert.equal(blockedTurn.stopReason, "error");
+assert.match(blockedTurn.errorMessage, /Extra Usage/);
+const afterBlock = await run([assistant("PLAN AVAILABLE AGAIN"), success("PLAN AVAILABLE AGAIN")]);
+assert.equal(afterBlock.stopReason, "stop", "a prior Extra Usage stop must not preempt a new query");
+assert.equal(afterBlock.errorMessage, undefined);
+assert.equal(afterBlock.content.map((block) => block.text ?? "").join(""), "PLAN AVAILABLE AGAIN");
+console.log("ok   fresh queries recover from previous limit, upstream and Extra Usage errors");
+
 const oneShot = await run([overage, assistant("must not continue"), success("must not continue")], { ...context, tools: [] });
 assert.equal(oneShot.stopReason, "error");
 assert.match(oneShot.errorMessage, /Extra Usage/);
