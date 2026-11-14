@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-14
+
 ### Added
 - New Claude models appear in `/model` without an OMP or bridge release. The picker came
   from the catalog bundled with OMP, so a new model waited for the next OMP release even
