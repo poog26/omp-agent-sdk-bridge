@@ -43,10 +43,10 @@ test("effective window leaves Claude Code's blocking margin (977K on 1M, 177K on
 	assert.equal(effectiveWindow(200_000, 8_000), 189_000);
 });
 
-test("auto: models with 1M included on every plan get a single 1M entry", () => {
+test("auto: models with 1M included on every plan get a single 1M entry under the plain name", () => {
 	const m = byId(settings());
 	assert.equal(m["claude-opus-5-5"].contextWindow, ONE_M);
-	assert.equal(m["claude-opus-5-5"].name, "Claude Opus 5.5 (1M)");
+	assert.equal(m["claude-opus-5-5"].name, "Claude Opus 5.5");
 	assert.equal(m["claude-fable-5-1"].contextWindow, ONE_M);
 	assert.equal(m["claude-sonnet-5-5"].contextWindow, ONE_M);
 	for (const id of ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5"]) {
@@ -68,12 +68,16 @@ test("auto: plan-gated models follow plan / extra usage", () => {
 	assert.equal(byId(settings("auto", { longContextExtraUsage: true }))["claude-sonnet-4-6"].contextWindow, ONE_M);
 	// The other window is always pickable.
 	assert.equal(byId(settings())["claude-opus-4-6-1m"].contextWindow, ONE_M);
+	// Only a real pair is labelled with its window.
+	assert.equal(byId(settings())["claude-opus-4-6"].name, "Claude Opus 4.6 (200K)");
+	assert.equal(byId(settings())["claude-opus-4-6-1m"].name, "Claude Opus 4.6 (1M)");
+	assert.equal(byId(settings())["claude-haiku-4-5"].name, "Claude Haiku 4.5", "a 200K-only model is unlabelled too");
 });
 
 test("auto: a new model the catalog lists at 1M gets a single 1M entry without being measured", () => {
 	const m = byId(settings());
 	assert.equal(m["claude-future-9"].contextWindow, ONE_M);
-	assert.equal(m["claude-future-9"].name, "Claude Future 9 (1M)");
+	assert.equal(m["claude-future-9"].name, "Claude Future 9");
 	assert.ok(!m["claude-future-9-1m"] && !m["claude-future-9-200k"], "no second entry");
 	assert.equal(claudeCodeModelId({ id: "claude-future-9" }, settings(), 1_000_000), "claude-future-9[1m]");
 	// Escape hatch if Claude Code turns out not to serve it at 1M.

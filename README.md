@@ -8,7 +8,7 @@
 
 An [Oh My Pi](https://omp.sh) extension that uses the official [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript) to run Claude as an OMP model provider. OMP keeps its TUI, tools, approvals, sessions and memory. Claude Code's unmodified binary handles each model turn under your own Claude login.
 
-- **Claude in `/model`**: every Claude model in OMP's catalog appears automatically (Fable, Opus, Sonnet, Haiku), at 1M wherever your plan includes it.
+- **Claude in `/model`**: every Claude model in OMP's Anthropic catalog appears automatically (Fable, Opus, Sonnet, Haiku), including new ones from OMP's daily catalog refresh, at 1M wherever your plan includes it.
 - **Your OMP setup reaches Claude**: your `PERSONALITY.md`, skills, rules, AGENTS.md/context files and `APPEND_SYSTEM.md` are forwarded verbatim.
 - **No surprise billing**: a warning when your environment would bill something other than your Claude login, and the bridge stops a turn that would be billed to Extra Usage unless you opt in.
 - **AskClaude tool**: when another provider is active, delegate a review or question to Claude (read-only by default).
@@ -75,9 +75,9 @@ To try it without installing: `omp -e /path/to/omp-agent-sdk-bridge/src/index.ts
 
 ## Models and context windows
 
-The picker follows OMP's Anthropic catalog, so new Claude models appear when OMP updates. Dated snapshot ids are hidden, and so is Mythos (not served to claude.ai plans; set `provider.excludeModels: []` to show it).
+The picker follows OMP's Anthropic catalog. OMP refreshes that catalog daily, and the bridge rebuilds the picker from the refreshed list whenever a session starts, so a new Claude model appears without waiting for an OMP or bridge release. Dated snapshot ids are hidden, and so is Mythos (not served to claude.ai plans; set `provider.excludeModels: []` to show it).
 
-Newer models have 1M included on every plan, so they get **one entry at 1M**. A separate 200K entry would only compact earlier, and OMP's own compaction threshold (`compaction.thresholdTokens`) already does that for any model. A second entry appears only where the window is a real plan difference; there the plain id is the default and the other gets a `-1m` / `-200k` suffix:
+Newer models have 1M included on every plan, so they get **one entry**, at 1M and under the model's plain name. A separate 200K entry would only compact earlier, and OMP's own compaction threshold (`compaction.thresholdTokens`) already does that for any model. A second entry appears only where the window is a real plan difference; there the plain id is the default, the other gets a `-1m` / `-200k` suffix, and both are labelled with their window, e.g. *Claude Opus 4.6 (200K)* and *Claude Opus 4.6 (1M)*:
 
 | Model | Picker entries |
 | --- | --- |
@@ -90,7 +90,7 @@ Newer models have 1M included on every plan, so they get **one entry at 1M**. A 
 
 `provider.contextWindow: "200k"` makes 200K the default everywhere; `provider.forceTwoHundredK` pins individual models to 200K.
 
-**Usable window.** Claude Code refuses requests locally at `window − 23K` (977K on 1M, 177K on 200K). The bridge registers that usable size, so OMP's auto-compaction fires before Claude Code would refuse. The picker label still names the served window.
+**Usable window.** Claude Code refuses requests locally at `window − 23K` (977K on 1M, 177K on 200K). The bridge registers that usable size, so OMP's auto-compaction fires before Claude Code would refuse. Where a model has both windows, the picker label still names the served one.
 
 Thinking levels map to Claude Code's effort, clamped to what each model supports (e.g. `xhigh` on Sonnet 4.6 sends `high`). `off` really turns thinking off.
 

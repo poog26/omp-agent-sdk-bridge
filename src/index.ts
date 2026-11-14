@@ -1,6 +1,6 @@
 import { StringEnum, Type, calculateCost, getModels, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions, type Tool, type Usage } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-ai-shim";
 import * as piAi from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-ai-shim";
-import { type ExtensionAPI, type ExtensionUIContext } from "@oh-my-pi/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@oh-my-pi/pi-coding-agent";
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { createSdkMcpServer, query, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
@@ -147,8 +147,8 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
 };
 
-// Base (unsuffixed) models projected from OMP's Anthropic catalog; set at registration
-// once the exclude list is known.
+// Base (unsuffixed) models projected from OMP's Anthropic catalog: the bundled one at
+// load, replaced by OMP's live catalog once a session starts (syncLiveCatalog).
 let MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false, contextWindow: "auto" };
@@ -2075,8 +2075,41 @@ export default function (pi: ExtensionAPI) {
 	// so OMP's cache warmer can refresh entries before they expire. Both tiers carry
 	// it: Claude Code, not OMP's retention setting, decides what is written.
 	const cacheSeconds = promptCacheSeconds(providerSettings.promptCacheTtl);
-	const registeredModels = buildVariantModels(MODELS, longContextSettings)
+	const registeredModelsFor = (models: typeof MODELS) => buildVariantModels(models, longContextSettings)
 		.map((m) => cacheSeconds ? { ...m, promptCache: { short: cacheSeconds, long: cacheSeconds } } : m);
+	let registeredModels = registeredModelsFor(MODELS);
+	const providerConfig = () => ({
+		baseUrl: "claude-bridge",
+		apiKey: "not-used",
+		api: "claude-bridge",
+		models: registeredModels,
+		// Cast: pi-ai AssistantMessageEventStream diamond dep between pi-coding-agent and pi-agent-core
+		streamSimple: streamClaudeAgentSdk as any,
+		// OMP's Usage panel. Read from disk on each fetch so every OMP process shows
+		// the latest figures Claude Code reported, whichever process ran the turn.
+		usage: {
+			id: PROVIDER_ID,
+			fetchUsage: async () => buildUsageReport(PROVIDER_ID, loadUsageState(USAGE_STATE_PATH)),
+		} as any,
+	});
+	// Set when this instance registered the provider; only that instance re-registers.
+	let ownsProvider = false;
+	// The catalog bundled with OMP only changes with an OMP release, but OMP refreshes
+	// its Anthropic catalog daily. Once a session has the registry, rebuild the picker
+	// from the live catalog so a new Claude model appears without waiting for a release.
+	const syncLiveCatalog = (ctx: ExtensionContext) => {
+		if (!ownsProvider) return;
+		const live = ctx.modelRegistry.getProviderModels("anthropic");
+		if (!live.length) return;
+		const models = buildModels(live, providerSettings.excludeModels);
+		const registered = registeredModelsFor(models);
+		if (JSON.stringify(registered) === JSON.stringify(registeredModels)) return;
+		const added = registered.filter((m) => !registeredModels.some((r) => r.id === m.id)).map((m) => m.id);
+		debug(`catalog: live Anthropic catalog changed the picker (${registered.length} entries; new: ${added.join(", ") || "none"})`);
+		MODELS = models;
+		registeredModels = registered;
+		pi.registerProvider(PROVIDER_ID, providerConfig());
+	};
 
 	// OMP session lifecycle: drop every mirror this instance holds. Subagent sessions
 	// that route through this instance simply rebuild on their next turn.
@@ -2097,6 +2130,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		piUI = ctx.ui;
 		clearSessions("session_start");
+		syncLiveCatalog(ctx);
 		// Default billing leaves Claude Code's auth untouched; say so when the environment
 		// would route it somewhere other than the user's Claude login.
 		const billing = providerSettings.billing ?? "inherit";
@@ -2106,7 +2140,10 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui?.notify?.(notice, "warning");
 		}
 	});
-	pi.on("session_switch", (event) => clearSessions(`session_switch:${event.reason}`));
+	pi.on("session_switch", (event, ctx) => {
+		clearSessions(`session_switch:${event.reason}`);
+		syncLiveCatalog(ctx);
+	});
 	pi.on("session_branch", () => clearSessions("session_branch"));
 	pi.on("session_shutdown", () => {
 		// A query parked on a tool call would otherwise keep its Claude Code process
@@ -2172,20 +2209,8 @@ export default function (pi: ExtensionAPI) {
 	if (!g[ACTIVE_STREAM_SIMPLE_KEY]) {
 		// First instance: store our streamSimple and register.
 		g[ACTIVE_STREAM_SIMPLE_KEY] = streamClaudeAgentSdk;
-		pi.registerProvider(PROVIDER_ID, {
-			baseUrl: "claude-bridge",
-			apiKey: "not-used",
-			api: "claude-bridge",
-			models: registeredModels,
-			// Cast: pi-ai AssistantMessageEventStream diamond dep between pi-coding-agent and pi-agent-core
-			streamSimple: streamClaudeAgentSdk as any,
-			// OMP's Usage panel. Read from disk on each fetch so every OMP process shows
-			// the latest figures Claude Code reported, whichever process ran the turn.
-			usage: {
-				id: PROVIDER_ID,
-				fetchUsage: async () => buildUsageReport(PROVIDER_ID, loadUsageState(USAGE_STATE_PATH)),
-			} as any,
-		});
+		ownsProvider = true;
+		pi.registerProvider(PROVIDER_ID, providerConfig());
 	} else {
 		// Subsequent instance (subagent session): skip registration entirely.
 		// The subagent already has access to claude-bridge models via the shared

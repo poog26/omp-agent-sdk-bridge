@@ -1,10 +1,12 @@
 // Model catalog + context-window policy for the /model picker.
 //
-// The picker is driven by OMP's own Anthropic catalog, so new Claude models show
-// up when OMP updates, with no bridge release. Models whose window is 1M (measured,
-// or stated by the catalog for a new model) get one entry. Only where the window
-// is a real plan difference (plan-gated models) is the unsuffixed id the default
-// window while the other gets a "-1m" / "-200k" suffix to pick instead.
+// The picker is driven by OMP's Anthropic catalog: the bundled one at load, then the
+// live one OMP refreshes, so new Claude models show up without a bridge or OMP release.
+// Models whose window is 1M (measured, or stated by the catalog for a new model) get
+// one entry under the catalog's own name. Only where the window is a real plan
+// difference (plan-gated models) is the unsuffixed id the default window while the
+// other gets a "-1m" / "-200k" suffix to pick instead, and only those entries are
+// labelled with their window.
 //
 // Deliberately free of runtime imports so tests can load it without OMP.
 
@@ -157,10 +159,9 @@ export function parseVariantId(id: string): { baseId: string; forced?: WindowKin
 	return { baseId: id };
 }
 
-function variantName(baseName: string, servedWindow: number): string {
-	const label = servedWindow >= ONE_M_CONTEXT ? "1M" : "200K";
-	const base = baseName.replace(/\s*(?:\((?:1M|200K)\)|\b1M\b)\s*$/i, "").trimEnd();
-	return `${base} (${label})`;
+/** Catalog name without any window label ("Claude Opus 4.6 (1M)" → "Claude Opus 4.6"). */
+function plainName(name: string): string {
+	return name.replace(/\s*(?:\((?:1M|200K)\)|\b1M\b)\s*$/i, "").trimEnd();
 }
 
 export function buildVariantModels<T extends { id: string; name: string; contextWindow: number; maxTokens: number }>(
@@ -175,13 +176,19 @@ export function buildVariantModels<T extends { id: string; name: string; context
 		// which OMP's own compaction threshold already controls. Offer the second
 		// window only where it is a real plan difference: the plan-gated models.
 		if (!(m.id in PLAN_GATED_ONE_M)) kinds.length = 1;
-		for (const kind of kinds) {
+		const variants = kinds.flatMap((kind) => {
 			const runtime = runtimeFor(m.id, kind, m.contextWindow);
-			if (!runtime) continue;
+			return runtime ? [{ kind, runtime }] : [];
+		});
+		// A window label only means something when there is another window to pick.
+		const labelled = variants.length > 1;
+		for (const { kind, runtime } of variants) {
 			result.push({
 				...m,
 				id: kind === defaultKind ? m.id : `${m.id}-${kind}`,
-				name: variantName(m.name, runtime.servedWindow),
+				name: labelled
+					? `${plainName(m.name)} (${runtime.servedWindow >= ONE_M_CONTEXT ? "1M" : "200K"})`
+					: plainName(m.name),
 				contextWindow: effectiveWindow(runtime.servedWindow, m.maxTokens),
 			});
 		}

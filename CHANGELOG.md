@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- New Claude models appear in `/model` without an OMP or bridge release. The picker came
+  from the catalog bundled with OMP, so a new model waited for the next OMP release even
+  though OMP refreshes its Anthropic catalog daily. When a session starts, the bridge now
+  rebuilds the picker from OMP's live catalog and re-registers it if anything changed.
+
+### Changed
+- Picker names carry a window label only where a model really has two entries (Opus 4.6
+  and Sonnet 4.6: "(200K)" and "(1M)"). A model with one window is listed under its plain
+  name, e.g. *Claude Opus 5.5* instead of *Claude Opus 5.5 (1M)*. Ids are unchanged.
+
 ## [0.10.0] - 2026-11-14
 
 ### Removed
