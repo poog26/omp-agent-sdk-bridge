@@ -48,7 +48,7 @@ Usage limits on Pro/Max/Ultra *"assume ordinary, individual usage of Claude Code
 Install a tagged release (listed under [Releases](https://github.com/poog26/omp-agent-sdk-bridge/releases); notes in the [CHANGELOG](CHANGELOG.md)):
 
 ```bash
-omp plugin install git:github.com/poog26/omp-agent-sdk-bridge#v0.11.0
+omp plugin install git:github.com/poog26/omp-agent-sdk-bridge#v0.11.1
 ```
 
 A pinned install stays on that release: `omp plugin upgrade` leaves it alone. To move to a newer release, run the install command again with its tag.
@@ -75,7 +75,7 @@ To try it without installing: `omp -e /path/to/omp-agent-sdk-bridge/src/index.ts
 
 ## Models and context windows
 
-The picker follows OMP's Anthropic catalog. OMP refreshes that catalog daily, and the bridge rebuilds the picker from the refreshed list whenever a session starts, so a new Claude model appears without waiting for an OMP or bridge release. Dated snapshot ids are hidden, and so is Mythos (not served to claude.ai plans; set `provider.excludeModels: []` to show it).
+The picker follows OMP's Anthropic catalog. OMP refreshes that catalog daily, and the bridge builds the picker from the refreshed list when OMP loads it, so a new Claude model appears the next time OMP starts after the refresh that found it, without waiting for an OMP or bridge release. Dated snapshot ids are hidden, and so is Mythos (not served to claude.ai plans; set `provider.excludeModels: []` to show it).
 
 Newer models have 1M included on every plan, so they get **one entry**, at 1M and under the model's plain name. A separate 200K entry would only compact earlier, and OMP's own compaction threshold (`compaction.thresholdTokens`) already does that for any model. A second entry appears only where the window is a real plan difference; there the plain id is the default, the other gets a `-1m` / `-200k` suffix, and both are labelled with their window, e.g. *Claude Opus 4.6 (200K)* and *Claude Opus 4.6 (1M)*:
 

@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-14
+
+### Fixed
+- New Claude models now arrive with the picker instead of after it. 0.11.0 re-registered
+  the picker from OMP's live catalog at `session_start`, which OMP emits after it has
+  restored a session's model, so a session on a model from the live catalog failed to
+  resume ("model not found"). The bridge now reads OMP's refreshed Anthropic catalog from
+  OMP's cache when it loads (offline, through OMP's own catalog manager) and registers once.
+  A new model appears the next time OMP starts after the daily refresh that found it.
+- Re-registering mid-session could drop your `models.yml` overrides for `claude-bridge`
+  models until OMP next rebuilt its catalog, and left an active session on stale model
+  metadata. The bridge no longer re-registers.
+- Overrides set on OMP's own `anthropic` provider no longer leak into bridge models: the
+  catalog is read before user overrides, so e.g. an `anthropic` `maxTokens` override can't
+  move the bridge's compaction point.
+
 ## [0.11.0] - 2026-11-14
 
 ### Added

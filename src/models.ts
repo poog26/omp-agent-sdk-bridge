@@ -1,7 +1,7 @@
 // Model catalog + context-window policy for the /model picker.
 //
-// The picker is driven by OMP's Anthropic catalog: the bundled one at load, then the
-// live one OMP refreshes, so new Claude models show up without a bridge or OMP release.
+// The picker is driven by OMP's Anthropic catalog as of OMP's last daily refresh (the
+// bundled one if there is none), so new Claude models show up without a bridge or OMP release.
 // Models whose window is 1M (measured, or stated by the catalog for a new model) get
 // one entry under the catalog's own name. Only where the window is a real plan
 // difference (plan-gated models) is the unsuffixed id the default window while the

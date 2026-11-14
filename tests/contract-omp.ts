@@ -80,6 +80,15 @@ try {
 	} as never);
 	check("OMP prices a bridge turn with a non-zero total", Math.abs(priced.total - 14) < 1e-9, JSON.stringify(priced));
 
+	// The picker is built at load from OMP's refreshed Anthropic catalog, read offline from
+	// OMP's cache by OMP's own catalog manager; an empty cache falls back to the bundled one.
+	const { createModelManager } = await import("@oh-my-pi/pi-catalog");
+	const { anthropicModelManagerOptions } = await import("@oh-my-pi/pi-catalog/provider-models");
+	const offline = await createModelManager(anthropicModelManagerOptions()).refresh("offline");
+	check("OMP's Anthropic catalog manager resolves offline with Claude models",
+		Array.isArray(offline.models) && offline.models.some((m) => m.id.startsWith("claude-")),
+		`source=${offline.source} count=${offline.models.length}`);
+
 	// OMP's own wire conversion feeds the bridge; nested fields must survive to Claude.
 	const { type } = await import("@oh-my-pi/omptype");
 	const { toolWireSchema } = await import("@oh-my-pi/pi-ai");

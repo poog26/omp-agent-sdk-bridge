@@ -1,6 +1,6 @@
 {
 	"name": "omp-agent-sdk-bridge",
-	"version": "0.11.0",
+	"version": "0.11.1",
 	"private": false,
 	"description": "Oh My Pi extension that runs Claude Code (via the official Claude Agent SDK) as an OMP model provider, forwarding OMP's persona, skills and context, with switchable 1M / 200K windows and an AskClaude delegation tool.",
 	"keywords": [
@@ -53,12 +53,16 @@
 	"peerDependencies": {
 		"@oh-my-pi/pi-agent-core": ">=18.15.0",
 		"@oh-my-pi/pi-ai": ">=18.15.0",
+		"@oh-my-pi/pi-catalog": ">=18.15.0",
 		"@oh-my-pi/pi-coding-agent": ">=18.15.0",
 		"@oh-my-pi/pi-tui": ">=18.15.0",
 		"@oh-my-pi/pi-utils": ">=18.15.0"
 	},
 	"peerDependenciesMeta": {
 		"@oh-my-pi/pi-ai": {
+			"optional": true
+		},
+		"@oh-my-pi/pi-catalog": {
 			"optional": true
 		},
 		"@oh-my-pi/pi-agent-core": {
@@ -78,6 +82,7 @@
 		"@anthropic-ai/sdk": "^0.124.0",
 		"@oh-my-pi/pi-agent-core": "^18.15.0",
 		"@oh-my-pi/pi-ai": "^18.15.0",
+		"@oh-my-pi/pi-catalog": "^18.15.0",
 		"@oh-my-pi/pi-coding-agent": "^18.15.0",
 		"@oh-my-pi/pi-tui": "^18.15.0",
 		"@oh-my-pi/pi-utils": "^18.15.0",
