@@ -4,6 +4,8 @@
 // seconds. The SDK emits one event per request, so warnings are de-duplicated by
 // 5% step and only re-armed when usage drops back to "allowed".
 
+import { PROVIDER_ID } from "./convert.js";
+
 export const RATE_LIMIT_WARN_THRESHOLD = 0.8;
 
 export interface RateLimitInfo {
@@ -60,9 +62,12 @@ export function isExtraUsage(info: RateLimitInfo | undefined): boolean {
 export function rateLimitNotice(
 	info: RateLimitInfo | undefined,
 	tracker: RateLimitTracker,
+	activeProvider: string | undefined,
 	threshold: number = RATE_LIMIT_WARN_THRESHOLD,
 ): RateLimitNotice | null {
-	if (!info) return null;
+	// A parked query or background role can report after the user switches models.
+	// Do not consume warning de-duplication state for a notice the user won't see.
+	if (!info || activeProvider !== PROVIDER_ID) return null;
 	const window = windowLabel(info.rateLimitType);
 	if (isExtraUsage(info)) {
 		if (tracker.extraUsageNotified) return null;

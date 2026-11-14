@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Claude usage-limit notifications no longer interrupt turns on Codex or other
+  providers when a parked query or background Claude request reports a limit.
+  Notices follow the currently selected model; usage recording and the Extra Usage
+  billing guard remain active regardless of the selected provider.
+
 ### Changed
 - The recommended install now tracks `main`, so `omp plugin upgrade omp-agent-sdk-bridge`
   receives the latest updates. Version pinning is documented as an optional alternative,

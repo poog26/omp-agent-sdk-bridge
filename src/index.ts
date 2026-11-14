@@ -650,7 +650,7 @@ function reportRateLimit(info: RateLimitInfo | undefined): boolean {
 	debug("rate_limit_event", JSON.stringify(info).slice(0, 300));
 	const state = loadUsageState(USAGE_STATE_PATH);
 	if (recordRateLimit(state, info)) saveUsageState(USAGE_STATE_PATH, state);
-	const notice = rateLimitNotice(info, rateLimitTracker);
+	const notice = rateLimitNotice(info, rateLimitTracker, activeProvider?.());
 	if (notice) piUI?.notify(notice.message, notice.level === "info" ? "info" : notice.level === "error" ? "error" : "warning");
 	return isExtraUsage(info);
 }
@@ -971,6 +971,7 @@ function mapToolArgs(
 
 // Global (not query state):
 let piUI: ExtensionUIContext | null = null;
+let activeProvider: (() => string | undefined) | null = null;
 const activeQueryContexts = new Set<QueryContext>();
 
 function contextForToolResults(results: McpResult[]): QueryContext | undefined {
@@ -2113,6 +2114,8 @@ export default async function (pi: ExtensionAPI) {
 	let authNoticeShown = false;
 	pi.on("session_start", (_event, ctx) => {
 		piUI = ctx.ui;
+		// ExtensionContext.model is a live getter, not the model captured at startup.
+		activeProvider = () => ctx.model?.provider;
 		clearSessions("session_start");
 		// Default billing leaves Claude Code's auth untouched; say so when the environment
 		// would route it somewhere other than the user's Claude login.
@@ -2126,6 +2129,7 @@ export default async function (pi: ExtensionAPI) {
 	pi.on("session_switch", (event) => clearSessions(`session_switch:${event.reason}`));
 	pi.on("session_branch", () => clearSessions("session_branch"));
 	pi.on("session_shutdown", () => {
+		activeProvider = null;
 		// A query parked on a tool call would otherwise keep its Claude Code process
 		// (and OMP's event loop) alive after OMP exits.
 		for (const queryCtx of activeQueryContexts) {
