@@ -56,7 +56,9 @@ Please make sure these pass. CI runs them on Linux and Windows for every pull re
 
 ## Releases
 
-Users install either a tagged release or `main`, so `main` should always be safe to run.
+The recommended install tracks `main`, so normal plugin upgrades pull its latest commit.
+Keep `main` safe to run; develop unfinished work on separate branches. Tagged releases
+are an optional pin for users who want a fixed version.
 Note every user-facing change under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
 To cut a release:
 
@@ -65,7 +67,8 @@ To cut a release:
 2. Bump the version: `npm version X.Y.Z --no-git-tag-version` (updates `package.json`
    and `package-lock.json`), and update the supported row in [SECURITY.md](SECURITY.md)
    on a minor bump.
-3. Update the tag in the README's install command, commit, and wait for CI to pass.
+3. Update the tag in the README's optional pinned-release example (keep the recommended
+   install unpinned), commit, and wait for CI to pass.
 4. Tag and publish: `git tag -a vX.Y.Z -m "omp-agent-sdk-bridge X.Y.Z"`, push the tag,
    then `gh release create vX.Y.Z --verify-tag` with that version's CHANGELOG section
    as the notes.

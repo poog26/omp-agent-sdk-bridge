@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- The recommended install now tracks `main`, so `omp plugin upgrade omp-agent-sdk-bridge`
+  receives the latest updates. Version pinning is documented as an optional alternative,
+  with instructions for switching existing pinned installs back to `main`.
+
 ## [0.11.1] - 2026-11-14
 
 ### Fixed
