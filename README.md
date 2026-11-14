@@ -45,11 +45,19 @@ Usage limits on Pro/Max/Ultra *"assume ordinary, individual usage of Claude Code
 
 ## Install
 
+Install a tagged release (listed under [Releases](https://github.com/poog26/omp-agent-sdk-bridge/releases); notes in the [CHANGELOG](CHANGELOG.md)):
+
+```bash
+omp plugin install git:github.com/poog26/omp-agent-sdk-bridge#v0.10.0
+```
+
+A pinned install stays on that release: `omp plugin upgrade` leaves it alone. To move to a newer release, run the install command again with its tag.
+
+Without a tag you track `main`, which gets every change as it lands, and `omp plugin upgrade omp-agent-sdk-bridge` pulls the latest commit:
+
 ```bash
 omp plugin install git:github.com/poog26/omp-agent-sdk-bridge
 ```
-
-Update later with `omp plugin upgrade omp-agent-sdk-bridge`.
 
 From a local checkout:
 

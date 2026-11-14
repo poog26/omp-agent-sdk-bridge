@@ -1,0 +1,9 @@
+# npm security updates are enabled in the repository settings. Version updates are
+# deliberately off for npm: the Claude Agent SDK is pinned to a tested version and
+# the OMP packages track OMP releases, so both are bumped by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

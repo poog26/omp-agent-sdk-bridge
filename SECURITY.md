@@ -7,8 +7,8 @@ This project follows a rolling release model. Security fixes land on the latest
 
 | Version | Supported |
 | ------- | --------- |
-| 0.9.x   | Yes       |
-| < 0.9   | No        |
+| 0.10.x  | Yes       |
+| < 0.10  | No        |
 
 ## Reporting a vulnerability
 

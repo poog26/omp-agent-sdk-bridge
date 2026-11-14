@@ -6,11 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
-- Removed the Claude-only cache footer and its process-wide totals. The independent
-  OMP `cache-status` extension owns the provider-neutral conversation indicator.
-  Bridge cache-miss detection, warnings, usage reconciliation and `/claude-usage`
-  remain unchanged.
+## [0.10.0] - 2026-11-14
+
+### Removed
+- The Claude-only cache footer and its process-wide totals. A conversation-wide cache
+  indicator is outside the bridge's scope. Cache-miss detection, warnings, usage
+  reconciliation and `/claude-usage` are unchanged.
 
 ### Fixed
 - Tool input didn't stream: a `write`'s content appeared all at once after Claude finished

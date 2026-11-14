@@ -54,6 +54,22 @@ Please make sure these pass. CI runs them on Linux and Windows for every pull re
   not advertised metadata. If you change a model mapping, note how you verified
   the served window (the `result: served contextWindow=...` debug line).
 
+## Releases
+
+Users install either a tagged release or `main`, so `main` should always be safe to run.
+Note every user-facing change under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
+To cut a release:
+
+1. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and start a new empty
+   `## [Unreleased]` above it.
+2. Bump the version: `npm version X.Y.Z --no-git-tag-version` (updates `package.json`
+   and `package-lock.json`), and update the supported row in [SECURITY.md](SECURITY.md)
+   on a minor bump.
+3. Update the tag in the README's install command, commit, and wait for CI to pass.
+4. Tag and publish: `git tag -a vX.Y.Z -m "omp-agent-sdk-bridge X.Y.Z"`, push the tag,
+   then `gh release create vX.Y.Z --verify-tag` with that version's CHANGELOG section
+   as the notes.
+
 ## Reporting bugs
 
 Open an issue using the bug template. A `~/.omp/agent/claude-bridge.log` excerpt
