@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-14
+
 ### Fixed
 - Claude usage-limit notifications no longer interrupt turns on Codex or other
   providers when a parked query or background Claude request reports a limit.
