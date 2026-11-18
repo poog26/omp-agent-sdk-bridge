@@ -11,6 +11,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Fresh queries clear the previous SDK error and Extra Usage stop flag, so a
   successful request after a limit reset does not fail with the old reset-time
   message. Failures still remain intact across tool calls within the same query.
+- A quick tool call right after a large cache write no longer writes the whole
+  history to the cache a second time. A 64K+ token write (a rebuilt or freshly
+  started long session) wasn't readable yet when Claude Code sent its next request
+  2-4 seconds later, so that request wrote it again. The bridge now holds tool
+  results until 5 seconds after such a response started; the hold is recorded as
+  `heldMs` in the usage ledger. A miss of this kind is reported with its timing
+  instead of as "unexplained".
 
 ## [0.11.2] - 2026-11-14
 

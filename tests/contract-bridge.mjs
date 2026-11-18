@@ -189,3 +189,37 @@ for (const [sessionId, mirror] of [["omp-a", "mirror-a"], ["omp-b", "mirror-b"]]
 	assert.equal(queries.at(-1).options.forkSession, true);
 }
 console.log("ok   non-isolated delegations select separate mirrors for distinct OMP sessions");
+
+// After a large cache write, tool results are held until the write is readable, so the
+// request they trigger reads it instead of writing it again. The steer still goes first,
+// and a hold that outlives its query (abort, replacement) delivers nothing into it.
+{
+	const { QueryContext } = await import("../src/query-state.ts");
+	const holding = (holdMs) => {
+		const qc = new QueryContext();
+		const seen = [];
+		qc.activeQuery = {};
+		qc.cacheReadableAt = Date.now() + holdMs;
+		qc.promptStream = { push: async () => { seen.push("steer"); } };
+		qc.pendingToolCalls.set("tool-1", { toolName: "read", resolve: () => seen.push(`result@${Date.now()}`) });
+		return { qc, seen };
+	};
+	const result = { toolCallId: "tool-1", content: [{ type: "text", text: "file body" }] };
+	const steer = [{ type: "text", text: "also check the tests" }];
+
+	const { qc, seen } = holding(150);
+	const before = Date.now();
+	await __test.deliverToolResults(qc, [result], steer);
+	assert.equal(seen[0], "steer", "the steer is written before the result releases Claude Code");
+	assert.ok(Number(seen[1]?.split("@")[1]) - before >= 140, `result released after the hold: ${JSON.stringify(seen)}`);
+	assert.ok(qc.heldMs > 0, "the hold is recorded for the next request's ledger entry");
+
+	for (const [label, endQuery] of [["aborted", (c) => { c.aborted = true; }], ["replaced", (c) => { c.activeQuery = {}; }]]) {
+		const ended = holding(80);
+		const delivery = __test.deliverToolResults(ended.qc, [result], steer);
+		endQuery(ended.qc);
+		await delivery;
+		assert.deepEqual(ended.seen, [], `a query ${label} during the hold receives neither steer nor result`);
+	}
+}
+console.log("ok   tool results wait for a large cache write to be readable; an ended query receives nothing");

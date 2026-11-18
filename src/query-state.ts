@@ -33,6 +33,12 @@ export class QueryContext {
 	promptStream: PromptStream | null = null;
 	/** Steers written to Claude Code but not yet echoed back as consumed. */
 	pendingSteerUuids = new Set<string>();
+	/** Set by the abort handler; a tool-result hold that wakes after it delivers nothing. */
+	aborted = false;
+	/** When this query's latest large cache write is readable (cache-settle.ts); 0 for none. */
+	cacheReadableAt = 0;
+	/** Hold on the tool results that trigger the next request, for its ledger entry. */
+	heldMs = 0;
 
 	// Per-turn (reset together)
 	turnOutput: AssistantMessage | null = null;

@@ -11,6 +11,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from "fs";
 import { dirname } from "path";
+import { CACHE_SETTLE_MS, LARGE_CACHE_WRITE_TOKENS } from "./cache-settle.js";
 
 export type CallKind = "turn" | "one-shot" | "warm" | "askclaude" | "unattributed";
 /** How the bridge prepared Claude Code's session for a turn; "in-query" is a request after a tool result. */
@@ -48,11 +49,16 @@ export interface LedgerEntry extends CallTokens {
 	sync?: SyncPath;
 	aborted?: boolean;
 	miss?: Miss;
+	/** How long the bridge held the tool results that triggered this request (cache-settle.ts). */
+	heldMs?: number;
 }
 
 export interface PrevCall {
+	/** When its response started; with cacheWrite, tells whether that write was readable yet. */
+	startedAt?: number;
 	endedAt: number;
 	prompt: number;
+	cacheWrite?: number;
 	model: string;
 	fingerprint?: Fingerprint;
 }
@@ -114,6 +120,10 @@ export function detectMiss(prev: PrevCall | undefined, cur: CallInfo, ttlSeconds
 		if (before.system !== now.system) return { lost, cause: "the system prompt changed (persona, skills, rules or project context)", expected: false };
 		if (before.thinking !== now.thinking) return { lost, cause: "thinking settings changed", expected: false };
 	}
+	if (prev.startedAt !== undefined && (prev.cacheWrite ?? 0) >= LARGE_CACHE_WRITE_TOKENS && cur.startedAt - prev.startedAt < CACHE_SETTLE_MS) {
+		const seconds = ((cur.startedAt - prev.startedAt) / 1000).toFixed(1);
+		return { lost, cause: `sent ${seconds}s after a ${formatTokens(prev.cacheWrite!)} cache write, before it was readable`, expected: false };
+	}
 	if (cur.sync === "rebuild") return { lost, cause: "the bridge rebuilt Claude Code's session from OMP's history", expected: false };
 	return { lost, cause: "unexplained: the prefix should have been cached", expected: false };
 }
@@ -129,7 +139,11 @@ export class QueryMeter {
 	/** Everything the bridge saw streamed in this query. */
 	readonly observed: CallTokens = zeroTokens();
 
-	constructor(private readonly onCall: (index: number, startedAt: number, tokens: CallTokens, aborted: boolean) => void) {}
+	constructor(
+		private readonly onCall: (index: number, startedAt: number, tokens: CallTokens, aborted: boolean) => void,
+		/** A request's response started; its cache write is already known. */
+		private readonly onStart?: (startedAt: number, tokens: CallTokens) => void,
+	) {}
 
 	/** Feed every stream event of the query. */
 	event(event: unknown): void {
@@ -138,6 +152,7 @@ export class QueryMeter {
 		if (e.type === "message_start") {
 			if (this.call) this.finish(true);
 			this.call = { startedAt: Date.now(), tokens: tokensFromReport(e.message?.usage) };
+			this.onStart?.(this.call.startedAt, this.call.tokens);
 		} else if (e.type === "message_delta" && this.call) {
 			tokensFromReport(e.usage, this.call.tokens);
 		} else if (e.type === "message_stop" && this.call) {

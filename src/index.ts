@@ -32,6 +32,7 @@ import { askClaudeToolPolicy, resolveAskClaudeMode, type AskClaudeMode } from ".
 import { jsonSchemaToZodSchema } from "./typebox-to-zod.js";
 import { applyClaudeUsage, type UsageTarget } from "./usage.js";
 import { subscriptionWarmingAction } from "./cache-warming.js";
+import { cacheReadableAt } from "./cache-settle.js";
 import { buildUsageReport, loadUsageState, recordAccount, recordRateLimit, saveUsageState } from "./usage-report.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { explainClaudeError, isExtraUsage, newRateLimitTracker, rateLimitNotice, type RateLimitInfo } from "./rate-limit.js";
@@ -711,7 +712,7 @@ function recordCall(entry: LedgerEntry, sessionKey?: string, fingerprint?: Finge
 		// A refresh keeps the previous prefix alive; it doesn't replace it.
 		lastCalls.set(sessionKey, entry.kind === "warm" && prev
 			? { ...prev, endedAt: Date.now() }
-			: { endedAt: Date.now(), prompt: promptTokens(entry), model: entry.model, fingerprint });
+			: { startedAt: entry.ts, endedAt: Date.now(), prompt: promptTokens(entry), cacheWrite: entry.cacheWrite, model: entry.model, fingerprint });
 	}
 	appendLedger(LEDGER_PATH, entry);
 
@@ -940,6 +941,7 @@ export const __test = {
 	},
 	syncSharedSession,
 	processStreamEvent,
+	deliverToolResults,
 };
 
 // --- Provider helpers: tool name mapping ---
@@ -1456,6 +1458,18 @@ function steerBlocks(messages: Context["messages"]): ContentBlockParam[] | null 
  * before any handler resolves or it misses this tool boundary.
  */
 async function deliverToolResults(c: QueryContext, results: McpResult[], steer: ContentBlockParam[] | null): Promise<void> {
+	// After a large cache write, the request these results trigger must not outrun it (cache-settle.ts).
+	const hold = c.cacheReadableAt - Date.now();
+	if (hold > 0) {
+		const heldQuery = c.activeQuery;
+		debug(`provider: holding ${results.length} tool result(s) ${hold}ms until the cache write is readable`);
+		await new Promise<void>((resolve) => { setTimeout(resolve, hold); });
+		if (c.aborted || c.extraUsageBlocked || c.activeQuery !== heldQuery) {
+			debug("provider: query ended while tool results were held; dropping them");
+			return;
+		}
+		c.heldMs += hold;
+	}
 	if (steer) {
 		const preview = steer.map((b) => (b.type === "text" ? b.text : "[image]")).join(" ").slice(0, 60);
 		let delivered = false;
@@ -1593,6 +1607,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// Keep them across tool-result callbacks, but never carry them into a new query.
 	queryCtx.resultError = undefined;
 	queryCtx.extraUsageBlocked = false;
+	queryCtx.aborted = false;
+	queryCtx.cacheReadableAt = 0;
+	queryCtx.heldMs = 0;
 	queryCtx.resetTurnState(model);
 	queryCtx.latestCursor = 0;
 
@@ -1689,11 +1706,17 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		mcpTools,
 		[thinkingOptions(thinking), thinking.display],
 	);
-	const newTurnMeter = (sync: SyncPath) => new QueryMeter((index, startedAt, tokens, aborted) => recordCall(
-		{ ts: startedAt, kind: "turn", model: model.id, session: sessionKey.slice(-8), sync: index === 0 ? sync : "in-query", ...tokens, ...(aborted ? { aborted } : {}) },
-		sessionKey,
-		fingerprint,
-	));
+	const newTurnMeter = (sync: SyncPath) => new QueryMeter((index, startedAt, tokens, aborted) => {
+		const heldMs = queryCtx.heldMs;
+		queryCtx.heldMs = 0;
+		recordCall(
+			{ ts: startedAt, kind: "turn", model: model.id, session: sessionKey.slice(-8), sync: index === 0 ? sync : "in-query", ...tokens, ...(aborted ? { aborted } : {}), ...(heldMs ? { heldMs } : {}) },
+			sessionKey,
+			fingerprint,
+		);
+	}, (startedAt, tokens) => {
+		queryCtx.cacheReadableAt = Math.max(queryCtx.cacheReadableAt, cacheReadableAt(startedAt, tokens.cacheWrite));
+	});
 	const turnMeter = newTurnMeter(syncResult.path);
 
 	debug("provider: fresh query",
@@ -1728,6 +1751,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	};
 	const onAbort = () => {
 		wasAborted = true;
+		abortCtx.aborted = true;
 		promptStream.fail(new Error("Operation aborted"));
 		abortCtx.pendingSteerUuids.clear();
 		// Prevent stale deferred messages from being replayed by parent on pop

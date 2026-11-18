@@ -55,6 +55,18 @@ test("causes: a history rewrite is expected, and changed inputs are named before
 	assert.match(detectMiss(prev(), call({ sync: "rebuild" }), 300).cause, /rebuilt/);
 });
 
+test("a request sent before a large cache write was readable is named as such, not unexplained", () => {
+	// The rebuilt-session shape: 114K written, a quick tool call, the next request 2.8s later.
+	const bigWrite = prev({ startedAt: 1_000_000, endedAt: 1_001_500, prompt: 144_700, cacheWrite: 114_428 });
+	const tooSoon = call({ startedAt: 1_002_800, tokens: { input: 2, cacheRead: 30_266, cacheWrite: 114_456, output: 241 } });
+	const miss = detectMiss(bigWrite, tooSoon, 3600);
+	assert.equal(miss.expected, false);
+	assert.match(miss.cause, /2\.8s after a 114K cache write, before it was readable/);
+	// Once the settle time has passed, or after a small write, timing doesn't explain a miss.
+	assert.match(detectMiss(bigWrite, { ...tooSoon, startedAt: 1_006_000 }, 3600).cause, /unexplained/);
+	assert.match(detectMiss({ ...bigWrite, cacheWrite: 40_000 }, tooSoon, 3600).cause, /unexplained/);
+});
+
 const start = (usage) => ({ type: "message_start", message: { usage } });
 const delta = (usage) => ({ type: "message_delta", usage });
 const stop = { type: "message_stop" };
