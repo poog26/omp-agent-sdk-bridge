@@ -48,7 +48,9 @@ test("a shorter history only counts what both requests share", () => {
 });
 
 test("causes: a history rewrite is expected, and changed inputs are named before a rebuild", () => {
-	assert.equal(detectMiss(prev(), call({ historyRewritten: true, sync: "rebuild" }), 300).expected, true);
+	const rewritten = detectMiss(prev(), call({ historyRewritten: "OMP rewrote the history (compaction or /tree)", sync: "rebuild" }), 300);
+	assert.equal(rewritten.expected, true);
+	assert.match(rewritten.cause, /compaction/);
 	assert.match(detectMiss(prev(), call({ fingerprint: { ...FP, tools: "t2", system: "s2" } }), 300).cause, /tool list/);
 	assert.match(detectMiss(prev(), call({ fingerprint: { ...FP, system: "s2" }, sync: "rebuild" }), 300).cause, /system prompt/);
 	assert.match(detectMiss(prev(), call({ fingerprint: { ...FP, thinking: "k2" } }), 300).cause, /thinking/);

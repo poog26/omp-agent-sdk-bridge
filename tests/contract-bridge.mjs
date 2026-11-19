@@ -258,4 +258,41 @@ console.log("ok   non-isolated delegations select separate mirrors for distinct 
 	}
 }
 console.log("ok   tool results wait for a large cache write to be readable; an ended query receives nothing");
+
+// A /btw side conversation resumes its own mirror on follow-ups, keeping what Claude
+// Code wrote there, until the main conversation it carries changes. One-off side
+// requests still drop their mirror.
+{
+	const { appendFileSync, readFileSync } = await import("node:fs");
+	const { sessionPath } = await import("../src/session-extend.ts");
+	const cwd = process.env.PI_CODING_AGENT_DIR;
+	const key = "omp-main:side:conversation:btw:q1:0";
+	const btw = { sessionId: key, parentSessionId: "omp-main", cwd };
+	const user = (text, timestamp) => ({ role: "user", content: [{ type: "text", text }], timestamp });
+	const reply = (text, timestamp) => ({ role: "assistant", content: [{ type: "text", text }], stopReason: "stop", timestamp });
+	const sideNote = (timestamp) => ({ role: "developer", content: [{ type: "text", text: "side question" }], timestamp });
+	const main = [user("main question", 1), reply("main answer", 2)];
+	const ask = (history, answer) => run([assistant(answer), success(answer)], { ...context, messages: history }, btw);
+
+	await ask([...main, sideNote(3), user("Q1", 4)], "A1");
+	const mirror = __test.getSharedSession(key);
+	assert.ok(mirror, "the side conversation keeps its mirror after its first turn");
+	const file = sessionPath(mirror.sessionId, cwd);
+	appendFileSync(file, JSON.stringify({ type: "marker", sessionId: mirror.sessionId, note: "written by Claude Code" }) + "\n");
+
+	// OMP rebuilds the side history on every follow-up, with fresh timestamps.
+	await ask([...main, sideNote(30), user("Q1", 40), reply("A1", 50), user("Q2", 60)], "A2");
+	assert.equal(queries.at(-1).options.resume, mirror.sessionId);
+	assert.match(readFileSync(file, "utf-8"), /written by Claude Code/, "a follow-up resumes the mirror instead of rebuilding it");
+
+	const moved = [...main, user("main follow-up", 70), reply("main answer 2", 80)];
+	await ask([...moved, sideNote(90), user("Q1", 100), reply("A1", 110), user("Q2", 120), reply("A2", 130), user("Q3", 140)], "A3");
+	const rebuilt = readFileSync(sessionPath(queries.at(-1).options.resume, cwd), "utf-8");
+	assert.doesNotMatch(rebuilt, /written by Claude Code/, "a changed main conversation rebuilds the mirror");
+	assert.match(rebuilt, /main follow-up/);
+
+	await run([assistant("once"), success("once")], context, { sessionId: "omp-main:side:one-off", parentSessionId: "omp-main", cwd });
+	assert.equal(__test.getSharedSession("omp-main:side:one-off"), null, "a one-off side request drops its mirror");
+}
+console.log("ok   /btw follow-ups resume their mirror until the main conversation changes; one-off side requests drop theirs");
 auth.close();

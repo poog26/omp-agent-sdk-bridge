@@ -69,8 +69,8 @@ export interface CallInfo {
 	tokens: CallTokens;
 	fingerprint?: Fingerprint;
 	sync?: SyncPath;
-	/** OMP rewrote the history since the previous request (compaction, /tree). */
-	historyRewritten?: boolean;
+	/** Why the history changed since the previous request (compaction, /tree, a side conversation's main conversation moving on). */
+	historyRewritten?: string;
 }
 
 /** Misses smaller than this are noise (a short tail, a tool result) rather than waste. */
@@ -112,7 +112,7 @@ export function detectMiss(prev: PrevCall | undefined, cur: CallInfo, ttlSeconds
 	const lost = shared - cur.tokens.cacheRead;
 	if (lost < MIN_LOST_TOKENS || cur.tokens.cacheRead >= 0.8 * shared) return undefined;
 
-	if (cur.historyRewritten) return { lost, cause: "OMP rewrote the history (compaction or /tree)", expected: true };
+	if (cur.historyRewritten) return { lost, cause: cur.historyRewritten, expected: true };
 	const before = prev.fingerprint;
 	const now = cur.fingerprint;
 	if (before && now) {

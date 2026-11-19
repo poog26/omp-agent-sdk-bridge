@@ -21,6 +21,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Overlapping subagent loads no longer remove `claude-bridge` from the shared
   OMP model registry and leave the parent reporting a missing API key. Each load
   registers the provider while preserving the active stream callback.
+- `/btw` follow-ups no longer write the whole side conversation to the cache
+  again. The bridge dropped every side request's session mirror when it finished,
+  so each follow-up rebuilt it from OMP's history, and only the system prompt was
+  read from the cache. A side conversation now keeps its mirror and resumes it
+  while the main conversation it carries is unchanged. If the main conversation
+  changed, the mirror is rebuilt and the miss is logged as expected with that
+  cause. One-off side requests still drop their mirror.
 
 ## [0.11.2] - 2026-11-14
 

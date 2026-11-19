@@ -20,6 +20,7 @@ import { buildVariantModels, buildModels, claudeCodeModelId, parseVariantId, typ
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { mirrorIdFor } from "./session-id.js";
+import { firstChangedMessage, isSideConversation, messageFingerprints } from "./side-conversation.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { makePromptStream, userMessage } from "./prompt-stream.js";
@@ -261,6 +262,9 @@ interface SessionState {
 // conversation overwrite each other's session and prompt cache.
 const sessions = new Map<string, SessionState>();
 const DEFAULT_SESSION_KEY = "default";
+// What each side conversation's mirror was built from, one fingerprint per OMP
+// message (side-conversation.ts).
+const sideConversationMessages = new Map<string, string[]>();
 
 interface SessionSlot { s: SessionState | null }
 function sessionSlot(key: string): SessionSlot {
@@ -268,6 +272,18 @@ function sessionSlot(key: string): SessionSlot {
 		get s() { return sessions.get(key) ?? null; },
 		set s(v: SessionState | null) { if (v) sessions.set(key, v); else sessions.delete(key); },
 	};
+}
+
+/** Rebuild a side conversation whose already-mirrored messages changed since its last turn. */
+function checkSideConversation(slot: SessionSlot, sessionKey: string, priorMessages: Context["messages"]): void {
+	const state = slot.s;
+	if (!state || state.needsRebuild) return;
+	const known = sideConversationMessages.get(sessionKey);
+	const changed = known ? firstChangedMessage(known, priorMessages, state.cursor) : 0;
+	if (changed === undefined) return;
+	debug(`side conversation ${sessionKey}: message ${changed} of ${state.cursor} changed since the last turn, rebuilding`);
+	slot.s = { ...state, needsRebuild: true, cleanBytes: undefined, cleanCursor: undefined, completed: false };
+	rewrittenSessions.set(sessionKey, "the main conversation changed since this side conversation's last turn");
 }
 
 // Convert pi messages to Anthropic API format for session import.
@@ -674,8 +690,9 @@ function reportRateLimit(info: RateLimitInfo | undefined): boolean {
 const LEDGER_PATH = join(getAgentDir(), "claude-bridge", "usage-ledger.jsonl");
 // The last request per OMP session, for spotting cache misses.
 const lastCalls = new Map<string, PrevCall>();
-// Sessions whose history OMP rewrote (compaction, /tree) since their last request.
-const rewrittenSessions = new Set<string>();
+// Sessions whose history changed under them since their last request, with the cause
+// (compaction, /tree, a side conversation's main conversation moving on).
+const rewrittenSessions = new Map<string, string>();
 // Misses this large are worth interrupting for; smaller ones only go to the ledger.
 const MISS_NOTIFY_TOKENS = 20_000;
 
@@ -695,7 +712,8 @@ function recordCall(entry: LedgerEntry, sessionKey?: string, fingerprint?: Finge
 		const prev = lastCalls.get(sessionKey);
 		// "default" leaves the lifetime to Claude Code, which uses 1h on a plan.
 		const ttl = promptCacheSeconds(providerSettings.promptCacheTtl) ?? 3600;
-		const historyRewritten = entry.kind === "turn" && rewrittenSessions.delete(sessionKey);
+		const historyRewritten = entry.kind === "turn" ? rewrittenSessions.get(sessionKey) : undefined;
+		if (historyRewritten !== undefined) rewrittenSessions.delete(sessionKey);
 		const miss = detectMiss(prev, { startedAt: entry.ts, model: entry.model, tokens: entry, sync: entry.sync, fingerprint, historyRewritten }, ttl);
 		if (miss) entry.miss = miss;
 		// A refresh keeps the previous prefix alive; it doesn't replace it.
@@ -921,6 +939,7 @@ function extendCleanSession(
 export const __test = {
 	resetSharedSession(key: string = DEFAULT_SESSION_KEY) {
 		sessions.delete(key);
+		sideConversationMessages.delete(key);
 	},
 	setSharedSession(state: SessionState | null, key: string = DEFAULT_SESSION_KEY) {
 		sessionSlot(key).s = state;
@@ -1512,8 +1531,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	const slot = sessionSlot(sessionKey);
 	// Side requests (OMP sets parentSessionId) get their own short-lived mirror,
-	// dropped when they finish so their session files don't pile up.
-	const ephemeral = Boolean((options as { parentSessionId?: string } | undefined)?.parentSessionId);
+	// dropped when they finish so their session files don't pile up. A continued
+	// side conversation (/btw follow-ups) keeps its mirror: see side-conversation.ts.
+	const sideRequest = Boolean((options as { parentSessionId?: string } | undefined)?.parentSessionId);
+	const sideConversation = sideRequest && isSideConversation(sessionKey);
+	const ephemeral = sideRequest && !sideConversation;
 	const stream = newAssistantMessageEventStream();
 
 	// OMP 18 starts some runs with a "developer" message (auto-continue); it is a prompt like a user message.
@@ -1550,6 +1572,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		if (recipe) recipe.lastMessage = context.messages[context.messages.length - 1];
 
 		if (slot.s) slot.s.cursor = context.messages.length;
+		if (sideConversation) sideConversationMessages.set(sessionKey, messageFingerprints(context.messages));
 		resultCtx.latestCursor = Math.max(resultCtx.latestCursor, context.messages.length);
 		return stream;
 	}
@@ -1564,6 +1587,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		pendingTurnErrors.delete(sessionKey);
 		debug(`provider: orphaned tool result, ${parked ? "delivering parked error" : "emitting end_turn"}`);
 		if (slot.s) slot.s.cursor = context.messages.length;
+		if (sideConversation) sideConversationMessages.set(sessionKey, messageFingerprints(context.messages));
 		queueMicrotask(() => {
 			if (parked) {
 				stream.push({ type: "error", reason: "error", error: newAssistantOutput(model, "", "error", parked) });
@@ -1604,7 +1628,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+	if (sideConversation) checkSideConversation(slot, sessionKey, context.messages.slice(0, -1));
 	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModelFor(model), sessionKey);
+	if (sideConversation) sideConversationMessages.set(sessionKey, messageFingerprints(context.messages));
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
@@ -1685,7 +1711,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// A clean start under the stable id replaces whatever an earlier OMP process left there.
 	if (!resumeSessionId && syncResult.freshSessionId) deleteSession(syncResult.freshSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
 	// What a cache-warm refresh of this conversation must send to match its prefix.
-	if (!ephemeral) {
+	if (!sideRequest) {
 		const { resume: _r, sessionId: _s, mcpServers: _m, stderr: _e, ...warmOptions } = queryOptions as typeof queryOptions & { stderr?: unknown };
 		warmRecipes.set(sessionKey, { lastMessage: context.messages[context.messages.length - 1], mcpTools, options: warmOptions });
 	}
@@ -1711,7 +1737,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
 		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${thinking.effort ?? (thinking.disabled ? "off" : "default")}`,
-		`append=${systemPromptAppend?.length ?? 0}ch persona=${personaStyle ? "output-style" : promptParts.personality ? "appended" : "none"} strictMcp=${strictMcpConfigEnabled} session=${sessionKey}${ephemeral ? " (side)" : ""}`,
+		`append=${systemPromptAppend?.length ?? 0}ch persona=${personaStyle ? "output-style" : promptParts.personality ? "appended" : "none"} strictMcp=${strictMcpConfigEnabled} session=${sessionKey}${sideRequest ? " (side)" : ""}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
 	// 3. Start SDK query and claim it for this context
@@ -2142,10 +2168,16 @@ export default async function (pi: ExtensionAPI) {
 		.map((m) => cacheSeconds ? { ...m, promptCache: { short: cacheSeconds, long: cacheSeconds } } : m);
 
 	// OMP session lifecycle: drop every mirror this instance holds. Subagent sessions
-	// that route through this instance simply rebuild on their next turn.
+	// that route through this instance simply rebuild on their next turn. Side
+	// conversation mirrors are kept between their turns, so their files go here.
 	const clearSessions = (event: string) => {
 		debug(`${event}: clearing ${sessions.size} session mirror(s)`);
+		for (const [key, state] of sessions) {
+			if (!isSideConversation(key)) continue;
+			try { deleteSession(state.sessionId, state.cwd, process.env.CLAUDE_CONFIG_DIR); } catch (e) { debug(`${event}: could not delete side mirror ${state.sessionId.slice(0, 8)}:`, e); }
+		}
 		sessions.clear();
+		sideConversationMessages.clear();
 		pendingTurnErrors.clear();
 
 		// Clear the global streamSimple if this instance registered it, so /reload
@@ -2194,7 +2226,7 @@ export default async function (pi: ExtensionAPI) {
 			sessions.set(key, { ...state, needsRebuild: true, cleanBytes: undefined, cleanCursor: undefined, completed: false });
 		}
 		// The next request's cache miss follows from the rewrite; the ledger says so.
-		for (const key of lastCalls.keys()) rewrittenSessions.add(key);
+		for (const key of lastCalls.keys()) rewrittenSessions.set(key, "OMP rewrote the history (compaction or /tree)");
 	};
 	// Idle cache warming on a Claude plan: see cache-warming.ts for why OMP's dollar floor
 	// is dropped for bridge turns. On an API key (or any non-Claude-login route) OMP decides.
