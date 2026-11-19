@@ -20,8 +20,9 @@ test("a refresh that costs more than it is expected to save stays stopped", () =
 	assert.equal(subscriptionWarmingAction({ ...opusIdle, continuationProbability: 0.01 }, true), undefined);
 });
 
-test("OMP's own 'warm' is never overridden, and missing economics are left alone", () => {
+test("OMP's own 'warm' and 'compact' are never overridden, and missing economics are left alone", () => {
 	assert.equal(subscriptionWarmingAction({ ...opusIdle, action: "warm" }, true), undefined);
+	assert.equal(subscriptionWarmingAction({ ...opusIdle, action: "compact" }, true), undefined);
 	assert.equal(subscriptionWarmingAction({ ...opusIdle, missCost: 0, warmCost: 0 }, true), undefined);
 	assert.equal(subscriptionWarmingAction({ ...opusIdle, missCost: Number.NaN }, true), undefined);
 });

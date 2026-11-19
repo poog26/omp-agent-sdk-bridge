@@ -80,12 +80,12 @@
 	},
 	"devDependencies": {
 		"@anthropic-ai/sdk": "^0.124.0",
-		"@oh-my-pi/pi-agent-core": "^18.15.0",
-		"@oh-my-pi/pi-ai": "^18.15.0",
-		"@oh-my-pi/pi-catalog": "^18.15.0",
-		"@oh-my-pi/pi-coding-agent": "^18.15.0",
-		"@oh-my-pi/pi-tui": "^18.15.0",
-		"@oh-my-pi/pi-utils": "^18.15.0",
+		"@oh-my-pi/pi-agent-core": "^19.0.1",
+		"@oh-my-pi/pi-ai": "^19.0.1",
+		"@oh-my-pi/pi-catalog": "^19.0.1",
+		"@oh-my-pi/pi-coding-agent": "^19.0.1",
+		"@oh-my-pi/pi-tui": "^19.0.1",
+		"@oh-my-pi/pi-utils": "^19.0.1",
 		"@types/node": "^24.13.2",
 		"tsx": "^4.22.4",
 		"typescript": "^6.0.3"

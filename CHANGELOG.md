@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Updated for OMP 19.0.1; development and CI now run against it.
+- On a Claude plan, the bridge still turns OMP's "stop" warming decision into a
+  refresh when it pays off, but no longer overrides OMP 19's "compact" decision.
+- AskClaude's skill reader handles `skill://` resources an MCP server serves as
+  bytes (OMP 19): images reach Claude as images, other binary files as a short
+  notice instead of garbled text.
+
 ### Fixed
 - A failed Claude query no longer poisons later queries in the same OMP process.
   Fresh queries clear the previous SDK error and Extra Usage stop flag, so a

@@ -10,18 +10,19 @@
 // refresh, which is why idle gaps were losing the cache.
 //
 // OMP's own limits still apply: warming stops after 30 idle minutes, when the
-// conversation changes, or when a refresh misses.
+// conversation changes, or when a refresh misses. Only a plain "stop" is overridden:
+// when OMP (19+) chooses to compact instead, that decision stands.
 
 export interface WarmingDecision {
 	warmCost: number;
 	missCost: number;
 	continuationProbability: number;
-	action: "warm" | "stop";
+	action: "warm" | "compact" | "stop";
 }
 
 /** The bridge's override for one decision, or undefined to leave OMP's decision as it is. */
 export function subscriptionWarmingAction(event: WarmingDecision, onSubscription: boolean): "warm" | undefined {
-	if (!onSubscription || event.action === "warm") return undefined;
+	if (!onSubscription || event.action !== "stop") return undefined;
 	const { warmCost, missCost, continuationProbability } = event;
 	if (![warmCost, missCost, continuationProbability].every(Number.isFinite)) return undefined;
 	if (missCost <= 0 || warmCost <= 0) return undefined;

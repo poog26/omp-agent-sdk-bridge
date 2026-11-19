@@ -193,6 +193,10 @@ try {
 		const result = await client.callTool({ name: "read", arguments: { path } });
 		assert.equal(result.isError, true, path);
 	}
+	const { resourceBlock } = await import("../src/instruction-reader.ts");
+	const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+	assert.deepEqual(resourceBlock("skill://figma/a.png", { content: png, contentType: "image/png" }), { type: "image", data: png.toString("base64"), mimeType: "image/png" });
+	assert.match(resourceBlock("skill://figma/a.pdf", { content: Buffer.from("%PDF"), contentType: "application/pdf" }).text, /binary file \(application\/pdf, 4 bytes\)/);
 } finally {
 	await client.close();
 	await server.instance.close();
