@@ -93,6 +93,22 @@ export function recordRateLimit(state: UsageState, info: ReportedRateLimit | und
 }
 
 /**
+ * Soonest future reset among exhausted windows, in epoch ms — the reset time a
+ * plan-limit error should carry so OMP can wait it out. Windows Claude Code has
+ * not reported as exhausted, and resets already past, are ignored.
+ */
+export function soonestPlanResetMs(state: UsageState, now: number = Date.now()): number | undefined {
+	let soonest: number | undefined;
+	for (const window of Object.values(state.windows)) {
+		if (window.utilization < 1 || window.resetsAt === undefined) continue;
+		const at = window.resetsAt * 1000;
+		if (at <= now) continue;
+		soonest = soonest === undefined ? at : Math.min(soonest, at);
+	}
+	return soonest;
+}
+
+/**
  * Record Claude Code's account label. A different known email invalidates old
  * account-bound windows, but observations from the query requesting accountInfo
  * may have arrived first and must survive its asynchronous response.

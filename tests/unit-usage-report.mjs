@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-	buildUsageReport, emptyUsageState, loadUsageState, recordAccount, recordRateLimit, saveUsageState,
+	buildUsageReport, emptyUsageState, loadUsageState, recordAccount, recordRateLimit, saveUsageState, soonestPlanResetMs,
 } from "../src/usage-report.ts";
 
 const NOW = Date.UTC(2026, 10, 9, 12, 0, 0);
@@ -136,4 +136,18 @@ test("initial labels, plan updates, email casing and partial accountInfo do not 
 	recordAccount(state, { subscriptionType: "pro" });
 	assert.equal(state.account.email, "ME@example.com");
 	assert.equal(buildUsageReport("claude-bridge", state, NOW).limits[0].amount.usedFraction, 0.3);
+});
+
+test("soonestPlanResetMs returns the soonest future reset among exhausted windows", () => {
+	const state = emptyUsageState();
+	recordRateLimit(state, { rateLimitType: "five_hour", utilization: 1.11, resetsAt: inHours(0.8), status: "rejected" }, NOW);
+	recordRateLimit(state, { rateLimitType: "seven_day", utilization: 0.83, resetsAt: inHours(30) }, NOW);
+	assert.equal(soonestPlanResetMs(state, NOW), inHours(0.8) * 1000);
+});
+
+test("soonestPlanResetMs ignores healthy windows and resets already past", () => {
+	const state = emptyUsageState();
+	recordRateLimit(state, { rateLimitType: "five_hour", utilization: 1, resetsAt: inHours(-1), status: "rejected" }, NOW);
+	recordRateLimit(state, { rateLimitType: "seven_day", utilization: 0.5, resetsAt: inHours(30) }, NOW);
+	assert.equal(soonestPlanResetMs(state, NOW), undefined);
 });

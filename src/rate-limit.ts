@@ -132,3 +132,35 @@ export function explainClaudeError(message: string): string {
 	}
 	return message;
 }
+
+// OMP's error classifier (packages/ai/src/error/rate-limit.ts) does not recognize
+// Claude Code's phrasing for a plan limit — "You've hit your session limit · resets
+// 4am (Europe/Budapest)" matches none of its patterns ("usage limit",
+// "limit_reached", "quota", "exhausted"), and its message parser
+// (packages/ai/src/utils/retry-after.ts) only reads "resets in ~N min" or an ISO
+// "reset at <timestamp>". Unrecognized, the turn fails on the spot instead of
+// waiting for the reset. The rate_limit_event that precedes the error carries the
+// real reset time (it is already saved to the usage state), so a plan-limit error
+// gains a line OMP both classifies as a usage limit and can sleep until.
+const PLAN_LIMIT_ERROR = /(?:session|plan) limit/i;
+const PLAN_LIMIT_HINT = "Claude usage limit reached";
+
+/** True when a failure message is a Claude plan-limit stop. */
+export function isPlanLimitMessage(message: string): boolean {
+	return PLAN_LIMIT_ERROR.test(message);
+}
+
+/** The OMP-facing reset hint for a plan-limit stop. */
+export function ompPlanLimitHint(resetsAtMs: number | undefined, now: Date = new Date()): string {
+	if (resetsAtMs !== undefined && Number.isFinite(resetsAtMs) && resetsAtMs > now.getTime()) {
+		const minutes = Math.max(1, Math.round((resetsAtMs - now.getTime()) / 60_000));
+		return `${PLAN_LIMIT_HINT} — resets in ~${minutes} min (reset at ${new Date(resetsAtMs).toISOString()}).`;
+	}
+	return `${PLAN_LIMIT_HINT} — wait for the plan window to reset, then retry.`;
+}
+
+/** Append the reset hint to a plan-limit error; other errors pass through unchanged. */
+export function explainPlanLimit(message: string, resetsAtMs: number | undefined, now: Date = new Date()): string {
+	if (!PLAN_LIMIT_ERROR.test(message) || message.includes(PLAN_LIMIT_HINT)) return message;
+	return `${message}\n${ompPlanLimitHint(resetsAtMs, now)}`;
+}

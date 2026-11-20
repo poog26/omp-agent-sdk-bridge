@@ -34,9 +34,9 @@ import { jsonSchemaToZodSchema } from "./typebox-to-zod.js";
 import { applyClaudeUsage, type UsageTarget } from "./usage.js";
 import { subscriptionWarmingAction } from "./cache-warming.js";
 import { cacheReadableAt } from "./cache-settle.js";
-import { buildUsageReport, loadUsageState, recordAccount, recordRateLimit, saveUsageState } from "./usage-report.js";
+import { buildUsageReport, loadUsageState, recordAccount, recordRateLimit, saveUsageState, soonestPlanResetMs } from "./usage-report.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
-import { explainClaudeError, isExtraUsage, newRateLimitTracker, rateLimitNotice, type RateLimitInfo } from "./rate-limit.js";
+import { explainClaudeError, explainPlanLimit, isExtraUsage, isPlanLimitMessage, newRateLimitTracker, rateLimitNotice, type RateLimitInfo } from "./rate-limit.js";
 import { QueryMeter, appendLedger, detectMiss, formatReport, formatTokens, promptTokens, readLedger, summarizeLedger, tokensFromReport, type Fingerprint, type LedgerEntry, type PrevCall, type SyncPath } from "./usage-ledger.js";
 import { instructionReader, INSTRUCTION_READ_TOOL } from "./instruction-reader.js";
 
@@ -521,7 +521,7 @@ async function runCacheWarm(
 			if (options?.signal?.aborted) throw new Error("Operation aborted");
 			if (message.type === "rate_limit_event") {
 				if (reportRateLimit(message.rate_limit_info) && !providerSettings.allowExtraUsage) {
-					throw new Error(EXTRA_USAGE_STOP_MESSAGE);
+					throw new Error(explainPlanLimit(EXTRA_USAGE_STOP_MESSAGE, planResetMs()));
 				}
 				continue;
 			}
@@ -543,7 +543,7 @@ async function runCacheWarm(
 				break;
 			}
 			if (message.type === "result") {
-				if (isErrorResult(message)) throw new Error(explainClaudeError(resultErrorText(message)));
+				if (isErrorResult(message)) throw new Error(explainPlanLimit(explainClaudeError(resultErrorText(message)), planResetMs()));
 				break;
 			}
 		}
@@ -659,7 +659,7 @@ async function runOneShot(
 		}
 		const text = finalText || assistantText;
 		if (errorText || !text.trim()) {
-			const msg = explainClaudeError(errorText ?? "Claude Code returned empty text");
+			const msg = explainPlanLimit(explainClaudeError(errorText ?? "Claude Code returned empty text"), planResetMs());
 			debug(`one-shot: error ${msg}`);
 			const failed = newAssistantOutput(model, "", "error", msg);
 			if (resultUsage) updateUsage(failed, resultUsage, model);
@@ -692,6 +692,11 @@ function reportRateLimit(info: RateLimitInfo | undefined): boolean {
 	const notice = rateLimitNotice(info, rateLimitTracker, activeProvider?.());
 	if (notice) piUI?.notify(notice.message, notice.level === "info" ? "info" : notice.level === "error" ? "error" : "warning");
 	return isExtraUsage(info);
+}
+
+/** Reset time a plan-limit error should carry, from the last rate-limit report Claude Code sent. */
+function planResetMs(): number | undefined {
+	return soonestPlanResetMs(loadUsageState(USAGE_STATE_PATH));
 }
 
 // --- Usage ledger (usage-ledger.ts) ---
@@ -1407,7 +1412,7 @@ async function consumeQuery(
 			// starts another turn. Otherwise close the input so Claude Code exits.
 			if (isErrorResult(message) || queryCtx.pendingSteerUuids.size === 0) queryCtx.promptStream?.end();
 			if (isErrorResult(message)) {
-				queryCtx.resultError = explainClaudeError(resultErrorText(message));
+				queryCtx.resultError = explainPlanLimit(explainClaudeError(resultErrorText(message)), planResetMs());
 				debug(`consumeQuery: error result: ${queryCtx.resultError}`);
 				continue;
 			}
@@ -1826,7 +1831,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 			// --- Failed result or Extra Usage stop: end the turn as an error ---
 			if (queryCtx.extraUsageBlocked || queryCtx.resultError) {
-				const msg = queryCtx.extraUsageBlocked ? EXTRA_USAGE_STOP_MESSAGE : queryCtx.resultError!;
+				const msg = explainPlanLimit(queryCtx.extraUsageBlocked ? EXTRA_USAGE_STOP_MESSAGE : queryCtx.resultError!, planResetMs());
 				// The CC process was cut off mid-turn (or errored): its JSONL is not a
 				// trustworthy continuation, so the next turn rebuilds from OMP's history.
 				if (slot.s) slot.s = { ...slot.s, needsRebuild: true, forceRotate: queryCtx.extraUsageBlocked };
@@ -1924,9 +1929,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				queryCtx.currentPiStream = null;
 				return;
 			}
-			const msg = queryCtx.extraUsageBlocked
+			const msg = explainPlanLimit(queryCtx.extraUsageBlocked
 				? EXTRA_USAGE_STOP_MESSAGE
-				: explainClaudeError(queryCtx.resultError ?? errorMessage(error));
+				: explainClaudeError(queryCtx.resultError ?? errorMessage(error)), planResetMs());
 			failTurn(queryCtx, sessionKey, msg);
 		})
 		.finally(() => {
@@ -1960,6 +1965,16 @@ const pendingTurnErrors = new Map<string, string>();
 
 function failTurn(queryCtx: QueryContext, sessionKey: string, msg: string): void {
 	if (queryCtx.turnOutput) {
+		// A plan-limit refusal is not assistant output, but Claude Code streams its
+		// text, and OMP refuses to replay a failed turn that committed text — the
+		// limit would end the turn instead of waiting for the reset. Drop the
+		// refusal's own text so the failed turn has no content, like Codex's; real
+		// partial work that is not part of the message stays in the transcript.
+		if (isPlanLimitMessage(msg)) {
+			queryCtx.turnOutput.content = queryCtx.turnOutput.content.filter(
+				(block) => !(block.type === "text" && msg.includes(block.text.trim())),
+			);
+		}
 		queryCtx.turnOutput.stopReason = "error";
 		queryCtx.turnOutput.errorMessage = msg;
 	}

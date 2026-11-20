@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { explainClaudeError, formatResetsAt, isExtraUsage, newRateLimitTracker, rateLimitNotice } from "../src/rate-limit.ts";
+import { explainClaudeError, explainPlanLimit, formatResetsAt, isExtraUsage, newRateLimitTracker, rateLimitNotice } from "../src/rate-limit.ts";
 
 // SDKRateLimitInfo units: utilization is a fraction 0..1, resetsAt is Unix seconds.
 const inAnHour = Math.floor(Date.now() / 1000) + 3600;
@@ -101,4 +101,32 @@ test("Extra Usage notices are independent for every window and reset period", ()
 	assert.equal(rateLimitNotice(nextPeriod, tracker, "openai-codex"), null);
 	assert.ok(rateLimitNotice(nextPeriod, tracker, "claude-bridge"), "hidden events do not consume the new period");
 	assert.equal(rateLimitNotice(nextPeriod, tracker, "claude-bridge"), null);
+});
+
+test("a session-limit error gains the reset hint OMP can classify and time-parse", () => {
+	// The exact text Claude Code returned on 2026-11-20; OMP could neither classify
+	// "session limit" nor parse "resets 4am (Europe/Budapest)", so the turn failed
+	// instead of waiting for the reset.
+	const observed = "You've hit your session limit · resets 4am (Europe/Budapest)";
+	const resetsAtMs = Date.now() + 48 * 60_000;
+	const msg = explainPlanLimit(observed, resetsAtMs, new Date());
+	assert.match(msg, /^You've hit your session limit/);
+	assert.match(msg, /Claude usage limit reached — resets in ~48 min/);
+	assert.match(msg, /reset at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+	// Idempotent: wrapping again (e.g. at both the capture and the failTurn site) adds nothing.
+	assert.equal(explainPlanLimit(msg, resetsAtMs), msg);
+});
+
+test("plan-limit errors without a usable reset still classify for OMP", () => {
+	const extraUsageStop = "Stopped: your Claude plan limit is reached and this request was billed to Extra Usage.";
+	for (const resetsAtMs of [undefined, Date.now() - 60_000]) {
+		const msg = explainPlanLimit(extraUsageStop, resetsAtMs, new Date());
+		assert.match(msg, /Claude usage limit reached — wait for the plan window to reset, then retry\./);
+		assert.doesNotMatch(msg, /~\d+ min/);
+	}
+});
+
+test("errors that are not plan limits pass through unchanged", () => {
+	const msg = "Unexpected EOF while reading the stream";
+	assert.equal(explainPlanLimit(msg, Date.now() + 3_600_000, new Date()), msg);
 });

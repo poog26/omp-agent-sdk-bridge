@@ -135,9 +135,19 @@ for (const error of [
 	"You've hit your session limit · resets 11:30pm (Europe/Budapest)",
 	"Temporary upstream error",
 ]) {
-	const failed = await run([{ type: "result", subtype: "error_during_execution", is_error: true, errors: [error] }]);
+	// The real stream sends the refusal as assistant text before the error result;
+	// only the plan-limit refusal must be dropped from the failed turn's content
+	// so OMP can retry it (committed text makes a failed turn non-replayable).
+	const streamed = error.includes("session limit") ? [assistant(error)] : [];
+	const failed = await run([...streamed, { type: "result", subtype: "error_during_execution", is_error: true, errors: [error] }]);
 	assert.equal(failed.stopReason, "error");
-	assert.equal(failed.errorMessage, error);
+	if (error.includes("session limit")) {
+		assert.deepEqual(failed.content, [], "the streamed refusal text is not kept as assistant output");
+		assert.ok(failed.errorMessage.startsWith(error), "the original error stays visible");
+		assert.match(failed.errorMessage, /Claude usage limit reached/);
+	} else {
+		assert.equal(failed.errorMessage, error);
+	}
 	const recovered = await run([assistant("NEW SUCCESSFUL ANSWER"), success("NEW SUCCESSFUL ANSWER")]);
 	assert.equal(recovered.stopReason, "stop", "an earlier query error must not override a new successful query");
 	assert.equal(recovered.errorMessage, undefined);

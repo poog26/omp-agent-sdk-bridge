@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- A Claude plan-limit error ("You've hit your session limit · resets 4am") now
+  carries the real reset time from the rate-limit report Claude Code sent just
+  before it, in the wording OMP recognizes. OMP's error classifier does not match
+  "session limit" and cannot time-parse "resets 4am", so the turn failed on the
+  spot; with the appended hint it classifies the error as a usage limit, sleeps
+  until the reset (`retry.waitForUsageReset`) and resumes on its own. The Extra
+  Usage stop message gains the same hint.
+- The streamed refusal text is no longer kept as the failed turn's assistant
+  output. OMP refuses to replay a failed turn that committed text, so the
+  committed "You've hit your session limit…" made the turn non-retryable even
+  with the hint; the failed turn is now content-empty like Codex limit errors,
+  and partial work unrelated to the refusal stays in the transcript.
+
 ## [0.11.3] - 2026-11-20
 
 ### Changed
