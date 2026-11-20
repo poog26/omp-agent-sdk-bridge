@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-11-20
+
 ### Fixed
 - A Claude plan-limit error ("You've hit your session limit · resets 4am") now
   carries the real reset time from the rate-limit report Claude Code sent just
