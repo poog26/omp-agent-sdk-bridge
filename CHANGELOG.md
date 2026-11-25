@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Updated for OMP 19.2.0; development and CI now run against it. The `AskClaude`
+  renderers type the older pi-tui `Text` fallback themselves, since the 19.2
+  types no longer declare it.
+
 ### Fixed
 - When OMP compacts during a tool call, the bridge now resumes from the compacted
   history instead of continuing the Claude Code query with the old context.
@@ -21,11 +26,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   only up to the turn's start, so the next request still reads the cache the
   aborted turn wrote. The usage ledger names a remaining miss after an abort
   instead of calling it unexplained.
-- The usage ledger no longer calls the one-time miss on a session's second turn
-  "unexplained" when the first turn was a single request without tool calls.
-  Claude Code ends that request on its environment and output-style message,
-  which is written to the cache again once the conversation continues (about 9K
-  tokens, once per session); the ledger now names it as expected.
+- The usage ledger identifies a partial cache hit on the first resume after a
+  one-request start. In live testing, Claude Code replayed its environment and
+  output-style block unchanged but wrote about 9K tokens to the cache again.
+  The diagnostic does not suppress cache-miss warnings.
 
 ## [0.11.4] - 2026-11-20
 

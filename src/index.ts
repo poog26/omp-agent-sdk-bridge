@@ -44,13 +44,16 @@ import { instructionReader, INSTRUCTION_READ_TOOL } from "./instruction-reader.j
 // The width helpers exist only on 19.2+, so their absence selects the older `Text` path.
 // The specifier must stay a string literal: OMP maps only literal imports of its own
 // packages to the copy inside its binary, so a computed one fails to resolve there.
-// @ts-ignore -- the module is new in OMP 19.2, newer than the pi-tui these types come from.
 const widthHelpers: { wrap?: (text: string, width: number) => string[] } = await import("@oh-my-pi/pi-tui/text/width").catch(() => ({}));
+// Older pi-tui's `Text` component, which the 19.2 types this builds against no longer declare.
+const legacyTui = piTui as { Text?: new (text: string, paddingX: number, paddingY: number) => { render(width: number): string[] } };
+const LegacyText = legacyTui.Text;
 
-function textBlock(text: string) {
+function textBlock(text: string): { render(width: number): string[] } {
 	const wrap = widthHelpers.wrap;
 	if (wrap) return { render: (width: number) => wrap(text, width) };
-	return new piTui.Text(text, 0, 0);
+	if (LegacyText) return new LegacyText(text, 0, 0);
+	return { render: () => text.split("\n") };
 }
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)

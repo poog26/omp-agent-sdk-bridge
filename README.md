@@ -1,6 +1,6 @@
 # omp-agent-sdk-bridge
 
-> **This is an updated version** of [DevVig/omp-claude-bridge](https://github.com/DevVig/omp-claude-bridge), which is itself an Oh My Pi port of Eli Dickinson's [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge). It has been rebuilt for Oh My Pi 19.0.1 and the current Claude Agent SDK, with security, billing and compliance fixes; see the [CHANGELOG](CHANGELOG.md).
+> **This is an updated version** of [DevVig/omp-claude-bridge](https://github.com/DevVig/omp-claude-bridge), which is itself an Oh My Pi port of Eli Dickinson's [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge). It has been rebuilt for Oh My Pi 19.2.0 and the current Claude Agent SDK, with security, billing and compliance fixes; see the [CHANGELOG](CHANGELOG.md).
 >
 > **If you've come across this repository:** don't install it blind. Ask your own Claude Opus 5.5 (for example in Claude Code) to integrate it for you. It can check that your OMP and Claude Code versions are compatible, set up the config for your plan, and verify that everything works on your machine, so you don't run into problems. You can paste this:
 >
@@ -13,7 +13,7 @@ An [Oh My Pi](https://omp.sh) extension that uses the official [Claude Agent SDK
 - **No surprise billing**: a warning when your environment would bill something other than your Claude login, and the bridge stops a turn that would be billed to Extra Usage unless you opt in.
 - **AskClaude tool**: when another provider is active, delegate a review or question to Claude (read-only by default).
 
-Requires OMP ≥ 18.15 and a working Claude Code login. Made for OMP 19.0.1; tested on Windows 11 with OMP 19.0 and Claude Code 2.1.308.
+Requires OMP ≥ 18.15 and a working Claude Code login. Made for OMP 19.2.0; tested on Windows 11 with OMP 19.1.1 and 19.2.0 and Claude Code 2.1.308.
 
 ## Terms of Service: what this does and doesn't do
 

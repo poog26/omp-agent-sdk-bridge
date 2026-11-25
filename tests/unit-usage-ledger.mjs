@@ -57,14 +57,17 @@ test("causes: a history rewrite is expected, and changed inputs are named before
 	assert.match(detectMiss(prev(), call({ sync: "rebuild" }), 300).cause, /rebuilt/);
 });
 
-test("after a turn that was a single request, the next turn's miss is expected; after a tool round it stays unexplained", () => {
-	// The live shape: a one-request first turn wrote 25.7K, the next turn read 16.6K.
+test("a partial first-resume hit gets a diagnostic without silencing other cache misses", () => {
 	const firstTurn = prev({ prompt: 25_701, sync: "clean-start" });
-	const nextTurn = call({ tokens: { input: 2, cacheRead: 16_558, cacheWrite: 9_223, output: 5 } });
+	const tokens = { input: 2, cacheRead: 16_558, cacheWrite: 9_223, output: 5 };
+	const nextTurn = call({ tokens });
 	const miss = detectMiss(firstTurn, nextTurn, 3600);
-	assert.equal(miss.expected, true);
-	assert.match(miss.cause, /single request/);
-	assert.match(detectMiss(prev({ prompt: 25_701, sync: "in-query" }), nextTurn, 3600).cause, /unexplained/);
+	assert.equal(miss.expected, false);
+	assert.match(miss.cause, /first resume after a single request/);
+	for (const sync of ["in-query", "reuse"]) {
+		assert.match(detectMiss({ ...firstTurn, sync }, nextTurn, 3600).cause, /unexplained/);
+	}
+	assert.match(detectMiss(firstTurn, call({ tokens: { ...tokens, cacheRead: 0, cacheWrite: 25_781 } }), 3600).cause, /unexplained/);
 });
 
 test("a request sent before a large cache write was readable is named as such, not unexplained", () => {
