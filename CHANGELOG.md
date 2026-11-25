@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Updated for OMP 19.2.0; development and CI now run against it. The `AskClaude`
+  renderers type the older pi-tui `Text` fallback themselves, since the 19.2
+  types no longer declare it.
+
 ### Fixed
 - When OMP compacts during a tool call, the bridge now resumes from the compacted
   history instead of continuing the Claude Code query with the old context.
