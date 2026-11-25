@@ -10,7 +10,7 @@ import * as piTui from "@oh-my-pi/pi-tui";
 import { getAgentDir, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
 import { clearStreamingPartialJson, getStreamingPartialJson, kStreamingLastParseLen, setStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
-import { extendCleanSession as _extendCleanSession, sessionFileBytes, sessionPath } from "./session-extend.js";
+import { extendCleanSession as _extendCleanSession, sessionFileBytes, sessionPath, type ToolRound } from "./session-extend.js";
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
@@ -258,13 +258,15 @@ interface SessionState {
 	// Byte length of the leading part of CC's JSONL that mirrors OMP's
 	// priors[0..cleanCursor) exactly as CC itself wrote it: measured when a query
 	// starts, so it stays valid after that query is aborted or fails. A rebuild
-	// keeps these bytes verbatim and converts only what follows. Rebuilding
-	// from OMP's history alone can't reproduce the records CC adds on its own
-	// (resume placeholders, environment/date/output-style attachments), so the
-	// rebuilt request diverged right after the system prompt and every cached
-	// message had to be written again. Unset after a history rewrite.
+	// keeps these bytes verbatim, plus CC's records through the newest tool round
+	// of the query it has written (toolRounds), and converts only what follows.
+	// Rebuilding from OMP's history alone can't reproduce the records CC adds on
+	// its own (resume placeholders, environment/date/output-style attachments) or
+	// its record format, so the rebuilt request diverged and every cached message
+	// after the divergence had to be written again. Unset after a history rewrite.
 	cleanBytes?: number;
 	cleanCursor?: number;
+	toolRounds?: ToolRound[];
 	// Set when a query completed: the whole file is clean, including the final
 	// assistant message that OMP's next context carries after `cursor`.
 	completed?: boolean;
@@ -724,6 +726,9 @@ const lastCalls = new Map<string, PrevCall>();
 // Sessions whose history changed under them since their last request, with the cause
 // (compaction, /tree, a side conversation's main conversation moving on).
 const rewrittenSessions = new Map<string, string>();
+// Sessions rolled back to a clean point after an aborted or failed query, with the
+// number of OMP messages converted after it.
+const rolledBackSessions = new Map<string, number>();
 // Misses this large are worth interrupting for; smaller ones only go to the ledger.
 const MISS_NOTIFY_TOKENS = 20_000;
 
@@ -745,7 +750,9 @@ function recordCall(entry: LedgerEntry, sessionKey?: string, fingerprint?: Finge
 		const ttl = promptCacheSeconds(providerSettings.promptCacheTtl) ?? 3600;
 		const historyRewritten = entry.kind === "turn" ? rewrittenSessions.get(sessionKey) : undefined;
 		if (historyRewritten !== undefined) rewrittenSessions.delete(sessionKey);
-		const miss = detectMiss(prev, { startedAt: entry.ts, model: entry.model, tokens: entry, sync: entry.sync, fingerprint, historyRewritten }, ttl);
+		const rolledBack = entry.kind === "turn" ? rolledBackSessions.get(sessionKey) : undefined;
+		if (rolledBack !== undefined) rolledBackSessions.delete(sessionKey);
+		const miss = detectMiss(prev, { startedAt: entry.ts, model: entry.model, tokens: entry, sync: entry.sync, fingerprint, historyRewritten, rolledBack }, ttl);
 		if (miss) entry.miss = miss;
 		// A refresh keeps the previous prefix alive; it doesn't replace it.
 		lastCalls.set(sessionKey, entry.kind === "warm" && prev
@@ -881,7 +888,7 @@ function syncSharedSession(
 		if (missed.length === 0 || trailingAssistantOnly) {
 			slot.s = {
 				...slot.s, cursor: priorMessages.length, cwd,
-				cleanBytes: sessionFileBytes(slot.s.sessionId, cwd), cleanCursor: priorMessages.length, completed: false,
+				cleanBytes: sessionFileBytes(slot.s.sessionId, cwd), cleanCursor: priorMessages.length, toolRounds: undefined, completed: false,
 			};
 			debug(`Case 3: ${trailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${slot.s.sessionId.slice(0, 8)}, cursor=${slot.s.cursor}`);
 			debug(`syncResult: path=reuse sessionId=${slot.s.sessionId} cursor=${slot.s.cursor}`);
@@ -901,7 +908,7 @@ function syncSharedSession(
 	// EXTEND path: OMP's history before `cursor` is unchanged (no compaction or
 	// tree move), so keep CC's own records for it and convert only the rest.
 	if (!replaceActiveQuery && slot.s && priorMessages.length >= slot.s.cursor) {
-		const extended = extendCleanSession(slot, priorMessages, cwd, customToolNameToSdk);
+		const extended = extendCleanSession(slot, key, priorMessages, cwd, customToolNameToSdk);
 		if (extended) return extended;
 	}
 
@@ -953,6 +960,7 @@ function syncSharedSession(
 /** EXTEND path wrapper: see session-extend.ts. Falls back to a rebuild on any failure. */
 function extendCleanSession(
 	slot: { s: SessionState | null },
+	sessionKey: string,
 	priorMessages: Context["messages"],
 	cwd: string,
 	customToolNameToSdk?: Map<string, string>,
@@ -964,12 +972,29 @@ function extendCleanSession(
 		if (!result) return undefined;
 		verifyWrittenSession(sessionPath(result.sessionId, cwd), result.sessionId, result.totalRecords, cwd);
 		slot.s = { sessionId: result.sessionId, cursor: priorMessages.length, cwd, cleanBytes: result.cleanBytes, cleanCursor: priorMessages.length };
+		if (!state.completed || state.needsRebuild) rolledBackSessions.set(sessionKey, result.convertedMessages);
 		debug(`syncResult: path=extend sessionId=${result.sessionId.slice(0, 8)} kept=${result.keptRecords} records, converted ${result.convertedMessages} msgs${result.sessionId !== state.sessionId ? ` (rotated from ${state.sessionId.slice(0, 8)})` : ""}`);
 		return { sessionId: result.sessionId, path: "extend" };
 	} catch (e) {
 		debug(`extendCleanSession failed, falling back to a full rebuild:`, e);
 		return undefined;
 	}
+}
+
+/**
+ * Note a tool round of the running query, so a rollback after an abort can keep
+ * Claude Code's records through it: see latestRoundOnDisk. Claude Code may not
+ * have written the round's records yet, so the file is only read on rollback.
+ */
+function recordToolRound(slot: SessionSlot, queryCtx: QueryContext, messages: Context["messages"], results: McpResult[]): void {
+	const state = slot.s;
+	if (!state || state.sessionId !== queryCtx.mirrorSessionId || state.needsRebuild || state.completed) return;
+	if (state.cleanBytes === undefined || state.cleanCursor === undefined) return;
+	let cursor = messages.length;
+	while (cursor > 0 && messages[cursor - 1].role !== "assistant") cursor--;
+	const toolUseIds = results.map((r) => r.toolCallId).filter((id): id is string => Boolean(id));
+	if (cursor <= state.cleanCursor || toolUseIds.length === 0) return;
+	slot.s = { ...state, toolRounds: [...(state.toolRounds ?? []), { cursor, toolUseIds }] };
 }
 
 // @internal
@@ -1624,6 +1649,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		if (recipe) recipe.lastMessage = context.messages[context.messages.length - 1];
 
 		if (slot.s) slot.s.cursor = context.messages.length;
+		recordToolRound(slot, resultCtx, context.messages, allResults);
 		if (sideConversation) sideConversationMessages.set(sessionKey, messageFingerprints(context.messages));
 		resultCtx.latestCursor = Math.max(resultCtx.latestCursor, context.messages.length);
 		return stream;
@@ -1799,6 +1825,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	let wasAborted = false;
 	let retired = false;
 	let mirrorId = resumeSessionId ?? syncResult.freshSessionId;
+	queryCtx.mirrorSessionId = resumeSessionId ?? undefined;
 	const accountObservationsSince = Date.now();
 	const sdkQuery = query({ prompt: promptStream.stream, options: queryOptions });
 	queryCtx.activeQuery = sdkQuery;

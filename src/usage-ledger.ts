@@ -71,6 +71,8 @@ export interface CallInfo {
 	sync?: SyncPath;
 	/** Why the history changed since the previous request (compaction, /tree, a side conversation's main conversation moving on). */
 	historyRewritten?: string;
+	/** OMP messages converted after a rollback to the clean point of an aborted or failed query. */
+	rolledBack?: number;
 }
 
 /** Misses smaller than this are noise (a short tail, a tool result) rather than waste. */
@@ -125,6 +127,9 @@ export function detectMiss(prev: PrevCall | undefined, cur: CallInfo, ttlSeconds
 		return { lost, cause: `sent ${seconds}s after a ${formatTokens(prev.cacheWrite!)} cache write, before it was readable`, expected: false };
 	}
 	if (cur.sync === "rebuild") return { lost, cause: "the bridge rebuilt Claude Code's session from OMP's history", expected: false };
+	if (cur.sync === "extend" && cur.rolledBack !== undefined) {
+		return { lost, cause: `after an aborted or failed query the bridge converted ${cur.rolledBack} OMP messages, which don't match the requests Claude Code sent for them`, expected: false };
+	}
 	return { lost, cause: "unexplained: the prefix should have been cached", expected: false };
 }
 

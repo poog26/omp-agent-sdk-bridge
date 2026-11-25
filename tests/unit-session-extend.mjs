@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { extendCleanSession, sessionFileBytes, sessionPath } from "../src/session-extend.ts";
+import { extendCleanSession, latestRoundOnDisk, sessionFileBytes, sessionPath } from "../src/session-extend.ts";
 import { convertPiMessages } from "../src/convert.ts";
 
 // A throwaway Claude config dir; sessionPath reads CLAUDE_CONFIG_DIR at call time.
@@ -107,4 +107,51 @@ test("snapshot bytes without a valid associated cursor require a full rebuild", 
 		}, history, cwd, importTail), undefined);
 		assert.equal(readFileSync(path, "utf-8"), ccText);
 	}
+});
+
+// One tool round of a running query as CC writes it: a record per content block,
+// parallel tool calls in separate records, then records of its own.
+const roundRecords = [
+	{ ...base, type: "user", uuid: "u2", parentUuid: "r1", message: { role: "user", content: "current question" } },
+	{ ...base, type: "assistant", uuid: "t1", parentUuid: "u2", message: { role: "assistant", id: "msg_2", content: [{ type: "text", text: "reading both" }] } },
+	{ ...base, type: "assistant", uuid: "t2", parentUuid: "t1", message: { role: "assistant", id: "msg_2", content: [{ type: "tool_use", id: "toolu_a", name: "Read", input: {} }] } },
+	{ ...base, type: "assistant", uuid: "t3", parentUuid: "t2", message: { role: "assistant", id: "msg_2", content: [{ type: "tool_use", id: "toolu_b", name: "Read", input: {} }] } },
+	{ ...base, type: "attachment", uuid: "a2", parentUuid: "t3", attachment: { type: "date", content: "AFTER THE TOOL CALLS" } },
+];
+const roundText = roundRecords.map((r) => JSON.stringify(r)).join("\n") + "\n";
+const throughToolUses = Buffer.byteLength(ccText + roundRecords.slice(0, 4).map((r) => JSON.stringify(r)).join("\n") + "\n");
+
+test("a rollback keeps CC's records through the newest tool round it has written, ignoring half-written lines", () => {
+	const data = Buffer.from(ccText + roundText + '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_c"');
+	const from = Buffer.byteLength(ccText);
+	const round = { cursor: 4, toolUseIds: ["toolu_a", "toolu_b"] };
+	const unwritten = { cursor: 6, toolUseIds: ["toolu_c"] };
+	assert.deepEqual(latestRoundOnDisk(data, from, [round, unwritten]), { round, bytes: throughToolUses }, "toolu_c is only in a half-written line");
+	assert.equal(latestRoundOnDisk(data, throughToolUses, [round]), undefined, "records before `from` are not searched");
+	assert.equal(latestRoundOnDisk(data, data.length + 1000, [round]), undefined);
+});
+
+test("after an abort at a tool round, CC's records for the round are kept and OMP's results answer them", () => {
+	writeCc(roundText + JSON.stringify({ type: "user", sessionId: sid, uuid: "late", message: { role: "user", content: "[Request interrupted by user]" } }) + "\n");
+	const messages = [
+		{ role: "user", content: "first question" },
+		{ role: "assistant", content: [{ type: "text", text: "first answer" }] },
+		{ role: "user", content: "current question" },
+		{ role: "assistant", content: [{ type: "text", text: "reading both" }, { type: "toolCall", id: "toolu_a", name: "read", arguments: {} }, { type: "toolCall", id: "toolu_b", name: "read", arguments: {} }] },
+		{ role: "toolResult", toolCallId: "toolu_a", content: [{ type: "text", text: "result a" }], isError: false },
+		{ role: "toolResult", toolCallId: "toolu_b", content: [{ type: "text", text: "aborted" }], isError: true },
+		{ role: "assistant", content: [] },
+	];
+	const result = extendCleanSession({
+		sessionId: sid, cursor: 6, cleanCursor: 2, cleanBytes: Buffer.byteLength(ccText), needsRebuild: true, forceRotate: true,
+		toolRounds: [{ cursor: 4, toolUseIds: ["toolu_a", "toolu_b"] }, { cursor: 7, toolUseIds: ["toolu_unwritten"] }],
+	}, messages, cwd, (session, tail) => session.importMessages(convertPiMessages(tail).anthropicMessages));
+	assert.equal(result.keptRecords, ccRecords.length + 4);
+	const records = readFileSync(sessionPath(result.sessionId, cwd), "utf-8").trim().split("\n").map(JSON.parse);
+	assert.deepEqual(records.slice(0, result.keptRecords).map((r) => r.uuid), [...ccRecords, ...roundRecords.slice(0, 4)].map((r) => r.uuid));
+	const [answer, ...rest] = records.slice(result.keptRecords);
+	assert.equal(answer.parentUuid, "t3");
+	assert.deepEqual(answer.message.content.map((b) => [b.tool_use_id, b.content, Boolean(b.is_error)]), [["toolu_a", "result a", false], ["toolu_b", "aborted", true]]);
+	assert.deepEqual(rest.map((r) => r.message.role), ["assistant"]);
+	assert.ok(!records.some((r) => r.uuid === "a2" || r.uuid === "late"), "records after the clean point are dropped");
 });
