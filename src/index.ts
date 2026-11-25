@@ -46,7 +46,8 @@ import { instructionReader, INSTRUCTION_READ_TOOL } from "./instruction-reader.j
 // packages to the copy inside its binary, so a computed one fails to resolve there.
 const widthHelpers: { wrap?: (text: string, width: number) => string[] } = await import("@oh-my-pi/pi-tui/text/width").catch(() => ({}));
 // Older pi-tui's `Text` component, which the 19.2 types this builds against no longer declare.
-const LegacyText = (piTui as { Text?: new (text: string, paddingX: number, paddingY: number) => { render(width: number): string[] } }).Text;
+const legacyTui = piTui as { Text?: new (text: string, paddingX: number, paddingY: number) => { render(width: number): string[] } };
+const LegacyText = legacyTui.Text;
 
 function textBlock(text: string): { render(width: number): string[] } {
 	const wrap = widthHelpers.wrap;
