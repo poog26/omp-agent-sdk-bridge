@@ -757,7 +757,7 @@ function recordCall(entry: LedgerEntry, sessionKey?: string, fingerprint?: Finge
 		// A refresh keeps the previous prefix alive; it doesn't replace it.
 		lastCalls.set(sessionKey, entry.kind === "warm" && prev
 			? { ...prev, endedAt: Date.now() }
-			: { startedAt: entry.ts, endedAt: Date.now(), prompt: promptTokens(entry), cacheWrite: entry.cacheWrite, model: entry.model, fingerprint });
+			: { startedAt: entry.ts, endedAt: Date.now(), prompt: promptTokens(entry), cacheWrite: entry.cacheWrite, model: entry.model, fingerprint, sync: entry.sync });
 	}
 	appendLedger(LEDGER_PATH, entry);
 
