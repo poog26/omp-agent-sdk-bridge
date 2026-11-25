@@ -61,6 +61,8 @@ export interface PrevCall {
 	cacheWrite?: number;
 	model: string;
 	fingerprint?: Fingerprint;
+	/** How its query's session was synced; "in-query" for a later request of that query. */
+	sync?: SyncPath;
 }
 
 export interface CallInfo {
@@ -129,6 +131,13 @@ export function detectMiss(prev: PrevCall | undefined, cur: CallInfo, ttlSeconds
 	if (cur.sync === "rebuild") return { lost, cause: "the bridge rebuilt Claude Code's session from OMP's history", expected: false };
 	if (cur.sync === "extend" && cur.rolledBack !== undefined) {
 		return { lost, cause: `after an aborted or failed query the bridge converted ${cur.rolledBack} OMP messages, which don't match the requests Claude Code sent for them`, expected: false };
+	}
+	// Measured on Claude Code 2.1.308: a query's first request ends on a system message
+	// holding the environment and output style. When the turn ended there (no tool
+	// round), the next turn re-sends that message unchanged but reads only through the
+	// system prompt. Only a session's first such turn carries the full message.
+	if (cur.sync === "reuse" && prev.sync !== undefined && prev.sync !== "in-query") {
+		return { lost, cause: "the previous turn was a single request, and Claude Code's environment and output-style message that ended it is written again once the conversation continues", expected: true };
 	}
 	return { lost, cause: "unexplained: the prefix should have been cached", expected: false };
 }
