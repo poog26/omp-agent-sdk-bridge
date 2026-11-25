@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-11-25
+
 ### Changed
 - Updated for OMP 19.2.0; development and CI now run against it. The `AskClaude`
   renderers type the older pi-tui `Text` fallback themselves, since the 19.2
