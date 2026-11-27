@@ -708,7 +708,7 @@ function reportRateLimit(info: RateLimitInfo | undefined): boolean {
 	const state = loadUsageState(USAGE_STATE_PATH);
 	if (recordRateLimit(state, info)) saveUsageState(USAGE_STATE_PATH, state);
 	const notice = rateLimitNotice(info, rateLimitTracker, activeProvider?.());
-	if (notice) piUI?.notify(notice.message, notice.level === "info" ? "info" : notice.level === "error" ? "error" : "warning");
+	if (notice) piUI?.notify(notice.message, notice.level);
 	return isExtraUsage(info);
 }
 
@@ -1672,7 +1672,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		queueMicrotask(() => {
 			if (parked) {
 				stream.push({ type: "error", reason: "error", error: newAssistantOutput(model, "", "error", parked) });
-				piUI?.notify(parked.split("\n")[0], "error");
+				if (!isPlanLimitMessage(parked)) piUI?.notify(parked.split("\n")[0], "error");
 			} else {
 				stream.push({ type: "done", reason: "stop", message: newAssistantOutput(model, "", "stop") });
 			}
@@ -2047,13 +2047,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 const pendingTurnErrors = new Map<string, string>();
 
 function failTurn(queryCtx: QueryContext, sessionKey: string, msg: string): void {
+	const planLimit = isPlanLimitMessage(msg);
 	if (queryCtx.turnOutput) {
 		// A plan-limit refusal is not assistant output, but Claude Code streams its
 		// text, and OMP refuses to replay a failed turn that committed text — the
 		// limit would end the turn instead of waiting for the reset. Drop the
 		// refusal's own text so the failed turn has no content, like Codex's; real
 		// partial work that is not part of the message stays in the transcript.
-		if (isPlanLimitMessage(msg)) {
+		if (planLimit) {
 			queryCtx.turnOutput.content = queryCtx.turnOutput.content.filter(
 				(block) => !(block.type === "text" && msg.includes(block.text.trim())),
 			);
@@ -2072,7 +2073,8 @@ function failTurn(queryCtx: QueryContext, sessionKey: string, msg: string): void
 	markStreamComplete(stream);
 	stream.end();
 	queryCtx.currentPiStream = null;
-	piUI?.notify(msg.split("\n")[0], "error");
+	// OMP already receives the plan-limit error on the stream for display and retry.
+	if (!planLimit) piUI?.notify(msg.split("\n")[0], "error");
 }
 
 // --- AskClaude: prompt and wait ---

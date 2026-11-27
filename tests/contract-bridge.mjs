@@ -131,6 +131,11 @@ console.log("ok   completed assistant + result fallback emits the answer once");
 }
 console.log("ok   only OMP's private capture gets a completion instead of an instruction to stay silent");
 
+const notices = [];
+await parent.extensions[0].handlers.get("session_start")[0]({ type: "session_start" }, {
+	model, ui: { notify: (message, level) => notices.push({ message, level }) },
+});
+
 // A failed SDK query must not poison the next fresh query on the same top-level
 // context. In particular, an old reset-time message must not override a new answer.
 for (const error of [
@@ -140,13 +145,19 @@ for (const error of [
 	// The real stream sends the refusal as assistant text before the error result;
 	// only the plan-limit refusal must be dropped from the failed turn's content
 	// so OMP can retry it (committed text makes a failed turn non-replayable).
-	const streamed = error.includes("session limit") ? [assistant(error)] : [];
+	const planLimit = error.includes("session limit");
+	const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+	const rejected = { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour", utilization: 1.11, resetsAt } };
+	const streamed = planLimit ? [rejected, assistant(error), rejected] : [];
+	notices.length = 0;
 	const failed = await run([...streamed, { type: "result", subtype: "error_during_execution", is_error: true, errors: [error] }]);
 	assert.equal(failed.stopReason, "error");
-	if (error.includes("session limit")) {
+	if (planLimit) {
 		assert.deepEqual(failed.content, [], "the streamed refusal text is not kept as assistant output");
 		assert.ok(failed.errorMessage.startsWith(error), "the original error stays visible");
 		assert.match(failed.errorMessage, /Claude usage limit reached/);
+		assert.ok(failed.errorMessage.includes(new Date(resetsAt * 1000).toISOString()), "OMP receives Claude's reset time");
+		assert.deepEqual(notices, [], "OMP gets the failed turn without duplicate extension notifications");
 	} else {
 		assert.equal(failed.errorMessage, error);
 	}

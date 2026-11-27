@@ -20,7 +20,7 @@ export interface RateLimitInfo {
 
 export interface RateLimitNotice {
 	message: string;
-	level: "info" | "warning" | "error";
+	level: "warning";
 }
 
 interface WindowNoticeState {
@@ -95,7 +95,8 @@ export function rateLimitNotice(
 	}
 	if (info.status === "rejected") {
 		state.lastWarnStep = null;
-		return { message: `Claude ${window} limit reached — resets ${formatResetsAt(info.resetsAt)}`, level: "error" };
+		// OMP presents the terminal turn error (or the wait until reset).
+		return null;
 	}
 	if (info.status === "allowed") {
 		state.lastWarnStep = null;
