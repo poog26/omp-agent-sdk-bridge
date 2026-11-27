@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Claude plan-limit refusals no longer post duplicate bridge errors. OMP still
+  receives the failed turn and reset time for its retry countdown or final error.
+
 ## [0.11.5] - 2026-11-25
 
 ### Changed

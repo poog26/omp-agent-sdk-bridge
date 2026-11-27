@@ -23,11 +23,11 @@ test("allowed_warning at 80%+ warns once per 5% step", () => {
 	assert.ok(rateLimitNotice({ status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.81 }, t, "claude-bridge"));
 });
 
-test("rejected surfaces as an error with a real reset time (seconds, not 1970)", () => {
-	const n = rateLimitNotice({ status: "rejected", rateLimitType: "seven_day", resetsAt: inAnHour }, newRateLimitTracker(), "claude-bridge");
-	assert.equal(n.level, "error");
-	assert.match(n.message, /weekly limit reached/);
-	assert.doesNotMatch(n.message, /1970|unknown/);
+test("a rejected plan limit does not notify separately from the failed turn", () => {
+	const tracker = newRateLimitTracker();
+	const rejected = { status: "rejected", rateLimitType: "seven_day", resetsAt: inAnHour };
+	assert.equal(rateLimitNotice(rejected, tracker, "claude-bridge"), null);
+	assert.equal(rateLimitNotice(rejected, tracker, "claude-bridge"), null);
 });
 
 test("Extra Usage billing is announced once until usage is back under the plan", () => {
@@ -51,16 +51,12 @@ test("explainClaudeError adds guidance for Extra Usage and login failures, passe
 	assert.equal(explainClaudeError("boom"), "boom");
 });
 
-test("late Claude limit events stay silent on Codex and resume when switching back", () => {
+test("late Claude usage warnings stay silent on Codex and resume when switching back", () => {
 	const tracker = newRateLimitTracker();
-	const rejected = { status: "rejected", rateLimitType: "five_hour", resetsAt: inAnHour };
-	let provider = "claude-bridge";
-	assert.match(rateLimitNotice(rejected, tracker, provider).message, /Claude 5-hour limit reached/);
-	provider = "openai-codex";
-	assert.equal(rateLimitNotice(rejected, tracker, provider), null);
-	assert.equal(rateLimitNotice(rejected, tracker, undefined), null);
-	provider = "claude-bridge";
-	assert.match(rateLimitNotice(rejected, tracker, provider).message, /Claude 5-hour limit reached/);
+	const warning = { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.85, resetsAt: inAnHour };
+	assert.equal(rateLimitNotice(warning, tracker, "openai-codex"), null);
+	assert.equal(rateLimitNotice(warning, tracker, undefined), null);
+	assert.match(rateLimitNotice(warning, tracker, "claude-bridge").message, /Claude 5-hour usage at 85%/);
 });
 
 test("hidden background warnings do not suppress later visible warnings or the billing guard", () => {
